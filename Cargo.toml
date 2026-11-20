@@ -3,3 +3,7 @@ name = "xpro"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.9", features = ["derive"] }
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
