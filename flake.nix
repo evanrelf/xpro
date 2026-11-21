@@ -9,6 +9,10 @@
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
+    jj-hunk = {
+      url = "github:laulauland/jj-hunk/v0.5.1";
+      flake = false;
+    };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     systems.url = "github:nix-systems/default";
   };
@@ -35,6 +39,14 @@
           };
 
           cargoArtifacts = crane.buildDepsOnly commonArgs;
+
+          jj-hunk = pkgs.rustPlatform.buildRustPackage {
+            pname = "jj-hunk";
+            version = "0.5.1";
+            src = inputs.jj-hunk;
+            cargoHash = "sha256-tO4oGY92AieYb1SY3ylWSkOlcIKadbZLKOY6nTzXo48=";
+            nativeCheckInputs = [ pkgs.jujutsu ];
+          };
         in
         {
           packages = {
@@ -66,6 +78,7 @@
               packages = with pkgs; [
                 exiftool
                 imagemagick
+                jj-hunk
               ];
             };
         };
