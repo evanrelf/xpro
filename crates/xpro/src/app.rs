@@ -1,7 +1,7 @@
 //! The interactive app.
 
 use anyhow::anyhow;
-use egui::{Color32, Rect, TextureHandle, TextureOptions, pos2};
+use egui::{Color32, Rect, TextureHandle, TextureOptions, Vec2, pos2};
 use std::{
     path::{Path, PathBuf},
     sync::mpsc,
@@ -150,12 +150,18 @@ fn develop_preview(
 
 /// Shows the photo as large as fits in the available space, centered.
 fn show_fitted(ui: &egui::Ui, texture: &TextureHandle) {
-    let available = ui.available_rect_before_wrap();
-    let size = texture.size_vec2();
-    let scale = (available.width() / size.x).min(available.height() / size.y);
-    let rect = Rect::from_center_size(available.center(), size * scale);
+    let rect = fit(ui.available_rect_before_wrap(), texture.size_vec2());
     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
     ui.painter().image(texture.id(), rect, uv, Color32::WHITE);
+}
+
+/// The largest rect with the same aspect ratio as `size` that fits in `available`, centered in
+/// it. If `available` has no room, the rect is empty.
+fn fit(available: Rect, size: Vec2) -> Rect {
+    let scale = (available.width() / size.x)
+        .min(available.height() / size.y)
+        .max(0.0);
+    Rect::from_center_size(available.center(), size * scale)
 }
 
 fn file_name(path: &Path) -> String {
@@ -163,4 +169,100 @@ fn file_name(path: &Path) -> String {
         .unwrap_or(path.as_os_str())
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hegel::{TestCase, generators as gs};
+
+    #[hegel::composite]
+    fn gen_length(tc: &TestCase, max: f32) -> f32 {
+        tc.draw(gs::floats::<f32>().min_value(1.0).max_value(max))
+    }
+
+    #[hegel::composite]
+    fn gen_fit_inputs(tc: &TestCase) -> (Rect, Vec2) {
+        let min = pos2(
+            tc.draw(gs::floats::<f32>().min_value(-1e4).max_value(1e4)),
+            tc.draw(gs::floats::<f32>().min_value(-1e4).max_value(1e4)),
+        );
+        let available = Rect::from_min_size(
+            min,
+            Vec2::new(tc.draw(gen_length(1e4)), tc.draw(gen_length(1e4))),
+        );
+        let size = Vec2::new(tc.draw(gen_length(1e5)), tc.draw(gen_length(1e5)));
+        (available, size)
+    }
+
+    /// How far off a computed coordinate inside `rect` can be from rounding: a few f32 steps at
+    /// the rect's largest coordinate.
+    fn position_error(rect: Rect) -> f32 {
+        let magnitude = [rect.min.x, rect.min.y, rect.max.x, rect.max.y]
+            .into_iter()
+            .fold(1.0, |max: f32, x| max.max(x.abs()));
+        8.0 * f32::EPSILON * magnitude
+    }
+
+    fn close(a: f32, b: f32, absolute: f32) -> bool {
+        (a - b).abs() <= absolute + 1e-5 * a.abs().max(b.abs())
+    }
+
+    #[hegel::test]
+    fn fit_is_never_inverted(tc: TestCase) {
+        // A cramped layout can leave a negative amount of space. Then there's no room for the
+        // photo, and it mustn't be drawn mirrored instead.
+        let side = || gs::floats::<f32>().min_value(-1e4).max_value(1e4);
+        let min = pos2(tc.draw(side()), tc.draw(side()));
+        let available = Rect::from_min_size(min, Vec2::new(tc.draw(side()), tc.draw(side())));
+        let size = Vec2::new(tc.draw(gen_length(1e5)), tc.draw(gen_length(1e5)));
+        let rect = fit(available, size);
+        assert!(rect.width() >= 0.0 && rect.height() >= 0.0, "{rect:?}");
+    }
+
+    #[hegel::test]
+    fn fit_stays_inside_the_available_space(tc: TestCase) {
+        let (available, size) = tc.draw(gen_fit_inputs());
+        let rect = fit(available, size);
+        let error = position_error(available);
+        assert!(available.expand(error).contains_rect(rect), "{rect:?} in {available:?}");
+    }
+
+    #[hegel::test]
+    fn fit_keeps_the_aspect_ratio(tc: TestCase) {
+        let (available, size) = tc.draw(gen_fit_inputs());
+        let rect = fit(available, size);
+        // Compare cross products rather than ratios, to avoid dividing by tiny heights.
+        let error = position_error(available);
+        assert!(
+            close(
+                rect.width() * size.y,
+                rect.height() * size.x,
+                error * (size.x + size.y),
+            ),
+            "{rect:?} vs {size:?}",
+        );
+    }
+
+    #[hegel::test]
+    fn fit_is_centered(tc: TestCase) {
+        let (available, size) = tc.draw(gen_fit_inputs());
+        let rect = fit(available, size);
+        let error = position_error(available);
+        assert!(close(rect.center().x, available.center().x, error));
+        assert!(close(rect.center().y, available.center().y, error));
+    }
+
+    #[hegel::test]
+    fn fit_fills_one_dimension(tc: TestCase) {
+        // Otherwise it could be bigger.
+        let (available, size) = tc.draw(gen_fit_inputs());
+        let rect = fit(available, size);
+        let error = position_error(available);
+        assert!(
+            close(rect.width(), available.width(), error)
+                || close(rect.height(), available.height(), error),
+            "{rect:?} in {available:?}",
+        );
+    }
 }

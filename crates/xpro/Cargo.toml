@@ -11,3 +11,6 @@ egui = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 xpro-core = { workspace = true }
+
+[dev-dependencies]
+hegeltest = { workspace = true }

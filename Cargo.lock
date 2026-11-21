@@ -5096,6 +5096,7 @@ dependencies = [
  "clap",
  "eframe",
  "egui",
+ "hegeltest",
  "tracing",
  "tracing-subscriber",
  "xpro-core",
