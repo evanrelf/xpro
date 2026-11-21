@@ -172,6 +172,9 @@ fn file_name(path: &Path) -> String {
 }
 
 #[cfg(test)]
+mod ui_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use hegel::{TestCase, generators as gs};

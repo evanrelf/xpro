@@ -13,4 +13,6 @@ tracing-subscriber = { workspace = true }
 xpro-core = { workspace = true }
 
 [dev-dependencies]
+egui_kittest = { workspace = true }
 hegeltest = { workspace = true }
+image = { workspace = true }
