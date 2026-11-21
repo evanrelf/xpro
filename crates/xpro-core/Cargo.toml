@@ -8,3 +8,6 @@ anyhow = { workspace = true }
 image = { workspace = true }
 rawler = { workspace = true }
 rayon = { workspace = true }
+
+[dev-dependencies]
+hegeltest = { workspace = true }

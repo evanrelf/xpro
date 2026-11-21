@@ -82,9 +82,195 @@ pub fn orient(image: &Image, orientation: Orientation) -> Image {
     }
 }
 
+/// Halves an image's width and height (rounding up) by averaging each 2×2 block of pixels.
+///
+/// The values are linear light, so averaging them mixes light the way a sensor with larger
+/// photosites would. Blocks along an odd right or bottom edge average the pixels they have.
+#[must_use]
+pub fn halve(image: &Image) -> Image {
+    let (w, h) = (image.width, image.height);
+    let (width, height) = (w.div_ceil(2), h.div_ceil(2));
+    let mut pixels = vec![[0.0; 3]; width * height];
+    pixels
+        .par_chunks_mut(width.max(1))
+        .enumerate()
+        .for_each(|(y, row)| {
+            for (x, pixel) in row.iter_mut().enumerate() {
+                // Summing in f64 keeps very large values from overflowing.
+                let mut sum = [0.0_f64; 3];
+                let mut count = 0.0;
+                for sy in 2 * y..(2 * y + 2).min(h) {
+                    for sx in 2 * x..(2 * x + 2).min(w) {
+                        let source = image.pixels[sy * w + sx];
+                        sum = std::array::from_fn(|c| sum[c] + f64::from(source[c]));
+                        count += 1.0;
+                    }
+                }
+                *pixel = sum.map(|s| (s / count) as f32);
+            }
+        });
+    Image {
+        width,
+        height,
+        pixels,
+    }
+}
+
+/// Halves an image as many times as needed to fit within the given size, or returns it unchanged
+/// if it already fits. Never shrinks an image below 1×1 pixel.
+#[must_use]
+pub fn shrink_to_fit(mut image: Image, max_width: usize, max_height: usize) -> Image {
+    while (image.width > max_width || image.height > max_height)
+        && (image.width > 1 || image.height > 1)
+    {
+        image = halve(&image);
+    }
+    image
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::{TestCase, generators as gs};
+
+    #[hegel::composite]
+    fn gen_image(tc: &TestCase, max_side: usize) -> Image {
+        let width = tc.draw(gs::integers::<usize>().min_value(1).max_value(max_side));
+        let height = tc.draw(gs::integers::<usize>().min_value(1).max_value(max_side));
+        // Scene-referred values have no upper limit, and can be negative when out of gamut.
+        let values = gs::floats::<f32>().allow_nan(false).allow_infinity(false);
+        let channels = width * height * 3;
+        let flat = tc.draw(gs::vecs(values).min_size(channels).max_size(channels));
+        let pixels = flat.as_chunks::<3>().0.to_vec();
+        Image {
+            width,
+            height,
+            pixels,
+        }
+    }
+
+    #[hegel::test]
+    fn halve_rounds_dimensions_up(tc: TestCase) {
+        let image = tc.draw(gen_image(9));
+        let halved = halve(&image);
+        assert_eq!(halved.width, image.width.div_ceil(2));
+        assert_eq!(halved.height, image.height.div_ceil(2));
+        assert_eq!(halved.pixels.len(), halved.width * halved.height);
+    }
+
+    #[hegel::test]
+    fn halve_stays_within_each_blocks_range(tc: TestCase) {
+        let image = tc.draw(gen_image(9));
+        let halved = halve(&image);
+        for y in 0..halved.height {
+            for x in 0..halved.width {
+                for c in 0..3 {
+                    let mut block = Vec::new();
+                    for sy in 2 * y..(2 * y + 2).min(image.height) {
+                        for sx in 2 * x..(2 * x + 2).min(image.width) {
+                            block.push(image.pixels[sy * image.width + sx][c]);
+                        }
+                    }
+                    let min = block.iter().copied().fold(f32::INFINITY, f32::min);
+                    let max = block.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                    let value = halved.pixels[y * halved.width + x][c];
+                    assert!(
+                        min <= value && value <= max,
+                        "{value} is outside {block:?}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[hegel::test]
+    fn halve_preserves_total_light(tc: TestCase) {
+        // Each output pixel stands for the input pixels it averaged, so weighting outputs by how
+        // many inputs they cover recovers the input's total.
+        let image = tc.draw(gen_image(9));
+        let halved = halve(&image);
+        for c in 0..3 {
+            let input: f64 = image.pixels.iter().map(|p| f64::from(p[c])).sum();
+            let output: f64 = (0..halved.height)
+                .flat_map(|y| (0..halved.width).map(move |x| (x, y)))
+                .map(|(x, y)| {
+                    let covered_x = (image.width - 2 * x).min(2);
+                    let covered_y = (image.height - 2 * y).min(2);
+                    let weight = (covered_x * covered_y) as f64;
+                    weight * f64::from(halved.pixels[y * halved.width + x][c])
+                })
+                .sum();
+            let magnitude: f64 = image.pixels.iter().map(|p| f64::from(p[c].abs())).sum();
+            assert!(
+                (input - output).abs() <= 1e-5 * magnitude.max(1.0),
+                "{input} != {output}",
+            );
+        }
+    }
+
+    #[hegel::test]
+    fn halve_keeps_a_flat_image_flat(tc: TestCase) {
+        let image = tc.draw(gen_image(9));
+        let flat = Image {
+            pixels: vec![image.pixels[0]; image.pixels.len()],
+            ..image
+        };
+        let halved = halve(&flat);
+        for pixel in &halved.pixels {
+            assert_eq!(*pixel, flat.pixels[0]);
+        }
+    }
+
+    #[hegel::test]
+    fn halve_commutes_with_transposing(tc: TestCase) {
+        // Halving treats rows and columns alike, including odd edges.
+        let image = tc.draw(gen_image(9));
+        let a = halve(&orient(&image, Orientation::Transpose));
+        let b = orient(&halve(&image), Orientation::Transpose);
+        assert_eq!((a.width, a.height), (b.width, b.height));
+        for (pa, pb) in a.pixels.iter().zip(&b.pixels) {
+            for c in 0..3 {
+                // Summing in a different order can round differently.
+                let tolerance = 1e-6 * pa[c].abs().max(pb[c].abs());
+                assert!((pa[c] - pb[c]).abs() <= tolerance, "{pa:?} != {pb:?}");
+            }
+        }
+    }
+
+    #[hegel::test]
+    fn shrink_to_fit_halves_as_little_as_possible(tc: TestCase) {
+        let image = tc.draw(gen_image(40));
+        let max_width = tc.draw(gs::integers::<usize>().min_value(1).max_value(50));
+        let max_height = tc.draw(gs::integers::<usize>().min_value(1).max_value(50));
+        let shrunk = shrink_to_fit(image.clone(), max_width, max_height);
+
+        assert!(shrunk.width <= max_width && shrunk.height <= max_height);
+        // It's exactly some number of halvings of the input, and one fewer wouldn't fit.
+        let mut expected = image;
+        let mut previous = None;
+        while (expected.width, expected.height) != (shrunk.width, shrunk.height) {
+            assert!(expected.width > 1 || expected.height > 1, "not a halving");
+            previous = Some((expected.width, expected.height));
+            expected = halve(&expected);
+        }
+        assert_eq!(expected.pixels, shrunk.pixels);
+        if let Some((width, height)) = previous {
+            assert!(width > max_width || height > max_height);
+        }
+    }
+
+    #[hegel::test]
+    fn shrink_to_fit_stops_at_one_pixel(tc: TestCase) {
+        let image = tc.draw(gen_image(40));
+        let max_width = tc.draw(gs::integers::<usize>().max_value(50));
+        let max_height = tc.draw(gs::integers::<usize>().max_value(50));
+        let shrunk = shrink_to_fit(image, max_width, max_height);
+        assert!(shrunk.width >= 1 && shrunk.height >= 1);
+        assert!(
+            (shrunk.width <= max_width && shrunk.height <= max_height)
+                || (shrunk.width, shrunk.height) == (1, 1)
+        );
+    }
 
     /// A 3×2 image whose pixels are numbered in reading order:
     ///
