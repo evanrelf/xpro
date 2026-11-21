@@ -50,7 +50,7 @@ fn render(input: &Path, output: &Path) -> anyhow::Result<()> {
     tracing::info!(elapsed = ?start.elapsed(), "Developed");
 
     let start = Instant::now();
-    let display = xpro_core::view::clip_to_srgb(&image);
+    let display = xpro_core::view::tone_map_to_srgb(&image, &xpro_core::view::ToneCurve::standard());
     tracing::info!(elapsed = ?start.elapsed(), "Applied view transform");
 
     let start = Instant::now();

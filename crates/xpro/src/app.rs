@@ -164,7 +164,7 @@ fn develop_preview(
     );
 
     let start = Instant::now();
-    let display = xpro_core::view::clip_to_srgb(&image);
+    let display = xpro_core::view::tone_map_to_srgb(&image, &xpro_core::view::ToneCurve::standard());
     tracing::info!(elapsed = ?start.elapsed(), "Applied view transform");
 
     Ok(Preview {
