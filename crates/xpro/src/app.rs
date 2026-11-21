@@ -14,13 +14,11 @@ use viewport::{Viewer, Viewport};
 use xpro_core::image::DisplayImage;
 
 pub fn run(photo: Option<PathBuf>) -> anyhow::Result<()> {
-    let title = match &photo {
-        Some(path) => format!("{} — Xpro", file_name(path)),
-        None => "Xpro".to_owned(),
-    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title(title)
+            // On macOS, eframe also uses the initial title as the name in the
+            // menu bar, so the window is renamed after the photo below.
+            .with_title("Xpro")
             .with_min_inner_size([480.0, 320.0])
             .with_maximized(true),
         ..Default::default()
@@ -28,7 +26,11 @@ pub fn run(photo: Option<PathBuf>) -> anyhow::Result<()> {
     eframe::run_native(
         "Xpro",
         options,
-        Box::new(|_cc| {
+        Box::new(|cc| {
+            if let Some(path) = &photo {
+                cc.egui_ctx
+                    .send_viewport_cmd(egui::ViewportCommand::Title(file_name(path)));
+            }
             Ok(Box::new(App {
                 photo: photo.map_or(Photo::None, Photo::Pending),
             }))
