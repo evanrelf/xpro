@@ -10,3 +10,4 @@ eframe = { workspace = true }
 egui = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+xpro-core = { workspace = true }
