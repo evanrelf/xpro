@@ -6,7 +6,7 @@ something real to use.
 **Current focus: basic nodes, composed directly.** No abstractions that bundle,
 name or hide subgraphs yet.
 
-## 1. See a raw photo
+## 1. See a raw photo (done)
 
 Open a raw file, decode and demosaic it, convert it to the working space, apply
 a basic view transform, and show it with zoom and pan.
