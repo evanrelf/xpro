@@ -1,0 +1,6 @@
+[package]
+name = "xpro-core"
+license = "MPL-2.0"
+edition = "2024"
+
+[dependencies]
