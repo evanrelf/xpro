@@ -1,3 +1,5 @@
+mod app;
+
 use clap::Parser as _;
 use std::{
     path::{Path, PathBuf},
@@ -5,7 +7,11 @@ use std::{
 };
 
 #[derive(clap::Parser)]
+#[command(args_conflicts_with_subcommands = true)]
 struct Args {
+    /// Raw photo to open
+    photo: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -28,9 +34,9 @@ fn main() -> anyhow::Result<()> {
 
     tracing_subscriber::fmt::init();
 
-    match &args.command {
-        Some(Command::Render { input, output }) => render(input, output),
-        None => run_gui(args),
+    match args.command {
+        Some(Command::Render { input, output }) => render(&input, &output),
+        None => app::run(args.photo),
     }
 }
 
@@ -50,45 +56,6 @@ fn render(input: &Path, output: &Path) -> anyhow::Result<()> {
     let start = Instant::now();
     xpro_core::export::write_png(&display, output)?;
     tracing::info!(elapsed = ?start.elapsed(), "Wrote {}", output.display());
-
-    Ok(())
-}
-
-fn run_gui(args: Args) -> anyhow::Result<()> {
-    let mut state = State { counter: 0 };
-
-    eframe::run_ui_native(
-        "Xpro",
-        eframe::NativeOptions::default(),
-        move |ui, frame| run_ui(&args, &mut state, ui, frame).unwrap(),
-    )?;
-
-    Ok(())
-}
-
-struct State {
-    counter: i32,
-}
-
-fn run_ui(
-    _args: &Args,
-    state: &mut State,
-    ui: &mut egui::Ui,
-    _frame: &mut eframe::Frame,
-) -> anyhow::Result<()> {
-    egui::CentralPanel::default().show(ui, |ui| {
-        ui.heading("Hello, world!");
-
-        ui.horizontal(|ui| {
-            if ui.button("−").clicked() {
-                state.counter -= 1;
-            }
-            ui.label(state.counter.to_string());
-            if ui.button("+").clicked() {
-                state.counter += 1;
-            }
-        });
-    });
 
     Ok(())
 }
