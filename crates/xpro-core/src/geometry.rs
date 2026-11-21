@@ -228,10 +228,16 @@ mod tests {
         let a = halve(&orient(&image, Orientation::Transpose));
         let b = orient(&halve(&image), Orientation::Transpose);
         assert_eq!((a.width, a.height), (b.width, b.height));
+        // Summing in a different order can round differently. The rounding error is relative to
+        // the values summed, which can be much bigger than their mean when they cancel out.
+        let largest = image
+            .pixels
+            .iter()
+            .flatten()
+            .fold(0.0_f32, |max, x| max.max(x.abs()));
+        let tolerance = 1e-6 * largest;
         for (pa, pb) in a.pixels.iter().zip(&b.pixels) {
             for c in 0..3 {
-                // Summing in a different order can round differently.
-                let tolerance = 1e-6 * pa[c].abs().max(pb[c].abs());
                 assert!((pa[c] - pb[c]).abs() <= tolerance, "{pa:?} != {pb:?}");
             }
         }
