@@ -21,12 +21,34 @@ fn harness(photo: Photo) -> Harness<'static, App> {
 /// A photo whose development has already finished with the given result.
 fn developed(result: anyhow::Result<DisplayImage>) -> Photo {
     let (sender, receiver) = mpsc::channel();
-    let preview = result.map(|image| Preview {
+    let developed = result.map(|image| Developed {
         full_size: Vec2::new(image.width as f32, image.height as f32),
-        image,
+        levels: levels(image),
     });
-    sender.send(preview).unwrap();
+    sender.send(developed).unwrap();
     Photo::Loading(receiver)
+}
+
+/// The image followed by successive halvings, like [`develop_levels`] makes. Each halving just
+/// keeps every other pixel, which is all these tests need.
+fn levels(image: DisplayImage) -> Vec<DisplayImage> {
+    let mut levels = vec![image];
+    loop {
+        let last = levels.last().unwrap();
+        if last.width.max(last.height) <= SMALLEST_LEVEL {
+            return levels;
+        }
+        let (width, height) = (last.width.div_ceil(2), last.height.div_ceil(2));
+        let pixels = (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .map(|(x, y)| last.pixels[2 * y * last.width + 2 * x])
+            .collect();
+        levels.push(DisplayImage {
+            width,
+            height,
+            pixels,
+        });
+    }
 }
 
 /// A `width`×`height` image whose left half is red and right half is blue.
@@ -207,6 +229,35 @@ fn double_clicking_switches_between_fit_and_100_percent() {
 }
 
 #[test]
+fn at_100_percent_each_photo_pixel_is_one_screen_pixel() {
+    // A checkerboard of single pixels only survives being drawn if it isn't shrunk first and
+    // lines up exactly with the screen's pixels.
+    let (width, height) = (1600, 800);
+    let pixels = (0..height)
+        .flat_map(|y| (0..width).map(move |x| if (x + y) % 2 == 0 { [255; 3] } else { [0; 3] }))
+        .collect();
+    let mut harness = harness(developed(Ok(DisplayImage {
+        width,
+        height,
+        pixels,
+    })));
+    harness.run();
+    // Off-center, between screen pixels, so the photo would land between them too.
+    double_click(&mut harness, Pos2::new(203.3, 151.6));
+    // Keep the mouse cursor out of the render.
+    harness.remove_cursor();
+    harness.run();
+    let render = harness.render().unwrap();
+    for y in 100..200 {
+        for x in 100..300 {
+            let [here, ..] = render.get_pixel(x, y).0;
+            let [right, ..] = render.get_pixel(x + 1, y).0;
+            assert!(here.abs_diff(right) > 250, "blurred at ({x}, {y}): {here} next to {right}");
+        }
+    }
+}
+
+#[test]
 fn a_zoomed_photo_is_drawn_bigger() {
     // At 100%, the 1600-pixel-wide photo is far wider than the window, so it's red on the left
     // edge of the window (zoomed in on the red half) with no background showing.
@@ -220,14 +271,19 @@ fn a_zoomed_photo_is_drawn_bigger() {
 }
 
 /// Develops a real raw photo end to end. Set `XPRO_SAMPLE_PHOTO` to a raw file to run it, and
-/// `XPRO_TEST_RENDERS` to a directory to save what the window shows.
+/// `XPRO_TEST_RENDERS` to a directory to save what the window shows, fitted and at 100%.
 #[test]
 fn a_sample_photo_develops_and_is_shown() {
     let Some(path) = std::env::var_os("XPRO_SAMPLE_PHOTO").map(PathBuf::from) else {
         eprintln!("Skipping: set XPRO_SAMPLE_PHOTO to a raw file to run this test");
         return;
     };
-    let mut harness = harness(Photo::Pending(path.clone()));
+    let mut harness = harness(Photo::None);
+    // The harness reports egui's fallback texture limit, 2048, which would leave out the
+    // full-size level. Report what the app's GPU setup actually allows instead.
+    harness.input_mut().max_texture_side = Some(8192);
+    harness.step();
+    harness.state_mut().photo = Photo::Pending(path.clone());
     let deadline = Instant::now() + Duration::from_secs(300);
     while matches!(harness.state().photo, Photo::Pending(_) | Photo::Loading(_)) {
         assert!(Instant::now() < deadline, "Timed out developing {}", path.display());
@@ -238,11 +294,20 @@ fn a_sample_photo_develops_and_is_shown() {
         panic!("{error:#}");
     }
     harness.run();
+    save_render(&mut harness, &format!("{}.png", file_name(&path)));
 
+    double_click(&mut harness, CENTER);
+    harness.remove_cursor();
+    harness.run();
+    save_render(&mut harness, &format!("{}.100.png", file_name(&path)));
+}
+
+/// Saves what the window shows to `XPRO_TEST_RENDERS`, if it's set.
+fn save_render(harness: &mut Harness<'_, App>, name: &str) {
     let render = harness.render().unwrap();
     if let Some(dir) = std::env::var_os("XPRO_TEST_RENDERS").map(PathBuf::from) {
         std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join(format!("{}.png", file_name(&path)));
+        let file = dir.join(name);
         render.save(&file).unwrap();
         eprintln!("Saved {}", file.display());
     }
