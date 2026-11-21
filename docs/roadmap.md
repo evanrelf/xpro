@@ -25,6 +25,8 @@ them.
 **Done when** you can edit a photo, save it, and rerun the same graph on a
 different photo from the command line.
 
+The working plan is in [milestone-2.md](milestone-2.md).
+
 ## 3. The canvas
 
 A visual node editor with type-checked wiring, thumbnails on nodes, and a
