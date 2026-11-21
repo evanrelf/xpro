@@ -220,7 +220,7 @@ mod tests {
 
     // Fitting
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 10_000)]
     fn fit_stays_inside_the_viewer(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
         let rect = viewer.photo_rect(Viewport::Fit);
@@ -228,7 +228,7 @@ mod tests {
         assert!(viewer.rect.expand(error).contains_rect(rect), "{rect:?} in {viewer:?}");
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 10_000)]
     fn fit_keeps_the_aspect_ratio(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
         let rect = viewer.photo_rect(Viewport::Fit);
@@ -238,7 +238,7 @@ mod tests {
         assert!(close(lhs, rhs, error), "{rect:?} vs {viewer:?}");
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 10_000)]
     fn fit_is_centered(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
         let rect = viewer.photo_rect(Viewport::Fit);
@@ -246,7 +246,7 @@ mod tests {
         assert!(close_pos(rect.center(), viewer.rect.center(), error));
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 10_000)]
     fn fit_fills_one_dimension(tc: TestCase) {
         // Otherwise it could be bigger.
         let viewer = tc.draw(gen_viewer());
@@ -259,7 +259,7 @@ mod tests {
         );
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 10_000)]
     fn fit_is_never_inverted(tc: TestCase) {
         // A cramped layout can leave a negative amount of space. Then there's no room for the
         // photo, and it mustn't be drawn mirrored instead.
@@ -275,7 +275,7 @@ mod tests {
 
     // Bounds
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 10_000)]
     fn clamp_keeps_the_photo_in_bounds(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
         let viewport = viewer.clamp(tc.draw(gen_viewport(viewer)));
@@ -300,7 +300,7 @@ mod tests {
         }
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 10_000)]
     fn clamp_is_idempotent(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
         let once = viewer.clamp(tc.draw(gen_viewport(viewer)));
@@ -308,7 +308,7 @@ mod tests {
         assert_same_view(viewer, once, twice);
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 10_000)]
     fn zooming_out_far_enough_fits(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
         let viewport = viewer.clamp(tc.draw(gen_viewport(viewer)));
@@ -316,7 +316,7 @@ mod tests {
         assert_eq!(viewer.zoom(viewport, 1e-6, anchor), Viewport::Fit);
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 10_000)]
     fn zooming_past_the_limit_leaves_the_photo_still(tc: TestCase) {
         // Pinching further at maximum magnification mustn't slide the photo around.
         let viewer = tc.draw(gen_viewer());
@@ -331,7 +331,7 @@ mod tests {
         assert_same_view(viewer, viewer.zoom(at_max, factor, anchor), at_max);
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 10_000)]
     fn a_viewer_with_no_room_only_fits(tc: TestCase) {
         // With no room there's no sensible zoom, and dividing by a zero scale would leave a
         // broken viewport behind.
@@ -352,7 +352,7 @@ mod tests {
 
     // Zooming and panning, before bounds are applied
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 10_000)]
     fn zooming_keeps_the_point_under_the_anchor(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
         let viewport = tc.draw(gen_viewport(viewer));
@@ -366,7 +366,7 @@ mod tests {
         assert!(close_pos(before, after, error), "{before:?} != {after:?}");
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 10_000)]
     fn panning_moves_the_photo_by_the_delta(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
         let viewport = tc.draw(gen_viewport(viewer));
@@ -381,7 +381,7 @@ mod tests {
 
     // 100%
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 10_000)]
     fn actual_size_shows_one_photo_pixel_per_screen_pixel(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
         let viewport = viewer.clamp(tc.draw(gen_viewport(viewer)));

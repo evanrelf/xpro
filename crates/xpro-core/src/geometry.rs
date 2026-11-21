@@ -149,7 +149,7 @@ mod tests {
         }
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 3_000)]
     fn halve_rounds_dimensions_up(tc: TestCase) {
         let image = tc.draw(gen_image(9));
         let halved = halve(&image);
@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(halved.pixels.len(), halved.width * halved.height);
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 3_000)]
     fn halve_stays_within_each_blocks_range(tc: TestCase) {
         let image = tc.draw(gen_image(9));
         let halved = halve(&image);
@@ -183,7 +183,7 @@ mod tests {
         }
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 3_000)]
     fn halve_preserves_total_light(tc: TestCase) {
         // Each output pixel stands for the input pixels it averaged, so weighting outputs by how
         // many inputs they cover recovers the input's total.
@@ -208,7 +208,7 @@ mod tests {
         }
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 3_000)]
     fn halve_keeps_a_flat_image_flat(tc: TestCase) {
         let image = tc.draw(gen_image(9));
         let flat = Image {
@@ -221,7 +221,7 @@ mod tests {
         }
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 1_500)]
     fn halve_commutes_with_transposing(tc: TestCase) {
         // Halving treats rows and columns alike, including odd edges.
         let image = tc.draw(gen_image(9));
@@ -243,7 +243,7 @@ mod tests {
         }
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 500)]
     fn shrink_to_fit_halves_as_little_as_possible(tc: TestCase) {
         let image = tc.draw(gen_image(40));
         let max_width = tc.draw(gs::integers::<usize>().min_value(1).max_value(50));
@@ -265,7 +265,7 @@ mod tests {
         }
     }
 
-    #[hegel::test]
+    #[hegel::test(test_cases = 500)]
     fn shrink_to_fit_stops_at_one_pixel(tc: TestCase) {
         let image = tc.draw(gen_image(40));
         let max_width = tc.draw(gs::integers::<usize>().max_value(50));
