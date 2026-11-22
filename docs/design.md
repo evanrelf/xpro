@@ -12,6 +12,9 @@ photography equivalent of a modular synthesizer: small modules patched
 together, alongside bigger, opinionated modules that get you somewhere good
 quickly.
 
+For a feel of Xpro in use, read the [story](story.md). Its terms are defined in
+the [glossary](glossary.md).
+
 ## Design values
 
 When tradeoffs come up, these come first.
