@@ -52,6 +52,14 @@ zoom.
 - **The command line is edit-aware.** Rendering an image file uses its edit
   file if it has one, otherwise a default graph. A flag applies some other graph
   instead, such as a graph file or another image file's edit.
+- **Images carry their color space,** starting as the camera's own RGB. The view
+  transform only applies the tone curve, so a display-referred image is still
+  linear Rec.2020. Converting to sRGB and encoding happen on output.
+- **Graph inputs are named.** A Read Raw node names the graph input it reads,
+  `image` by default, and evaluating binds each name to an image file.
+- **Output paths are templates,** like `{image}.png`, where `{image}` is the
+  name of the image file bound to the graph input `image`, without its
+  extension. Relative paths resolve against the image file's directory.
 - **Headless first.** The core, file format, evaluator and CLI come before the
   GUI, so the GUI lands on a settled core.
 
@@ -65,7 +73,7 @@ Each step is one or a few commits, tested headlessly before moving on.
 shows them in use. It's deliberately small: add a term when a step needs one,
 with the user's review, rather than in advance.
 
-### 1. Values and nodes, without a graph
+### 1. Values and nodes, without a graph (done)
 
 - **Value types:** mosaic, scene-referred image and display-referred image.
   A scene-referred image carries its color space, which starts as the camera's
@@ -80,7 +88,7 @@ with the user's review, rather than in advance.
 - Chain the nodes in code to replace the fixed pipeline. Rendered output must
   stay the same, which makes the refactor easy to verify.
 
-### 2. The graph and its file format
+### 2. The graph and its file format (done)
 
 - **The graph:** a map from node IDs to nodes, each with an optional label,
   plus a file format version. Serialize it to RON.
@@ -89,7 +97,7 @@ with the user's review, rather than in advance.
 - **Tests:** property tests that graphs round-trip through the file format, and
   that validation catches each kind of error.
 
-### 3. Evaluate and execute
+### 3. Evaluate and execute (done)
 
 - An evaluator that computes a node's value by evaluating its inputs first, with
   no caching yet.
