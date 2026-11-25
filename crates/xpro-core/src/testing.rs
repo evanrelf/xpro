@@ -22,7 +22,11 @@ pub fn randomize_parameters(tc: &TestCase, node: &mut Node, allow_nan: bool) {
             node.multipliers = if tc.draw(gs::booleans()) {
                 Multipliers::AsShot
             } else {
-                Multipliers::Custom(std::array::from_fn(|_| tc.draw(gen_float(allow_nan))))
+                Multipliers::Custom {
+                    red: tc.draw(gen_float(allow_nan)),
+                    green: tc.draw(gen_float(allow_nan)),
+                    blue: tc.draw(gen_float(allow_nan)),
+                }
             };
         }
         Node::Exposure(node) => node.stops = tc.draw(gen_float(allow_nan)),

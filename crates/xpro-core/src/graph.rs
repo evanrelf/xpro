@@ -64,7 +64,43 @@ pub struct GraphNode {
 #[serde(deny_unknown_fields)]
 struct Format {
     version: u32,
+    #[serde(deserialize_with = "deserialize_unique")]
     nodes: BTreeMap<NodeId, GraphNode>,
+}
+
+/// Reads a map of nodes, failing if a node ID appears more than once rather than keeping only
+/// the last node with it.
+fn deserialize_unique<'de, D>(deserializer: D) -> Result<BTreeMap<NodeId, GraphNode>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Visitor;
+
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = BTreeMap<NodeId, GraphNode>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a map from node IDs to nodes")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut nodes = BTreeMap::new();
+            while let Some((id, node)) = map.next_entry::<NodeId, GraphNode>()? {
+                if nodes.contains_key(&id) {
+                    return Err(serde::de::Error::custom(format!(
+                        "The node ID {id} appears more than once"
+                    )));
+                }
+                nodes.insert(id, node);
+            }
+            Ok(nodes)
+        }
+    }
+
+    deserializer.deserialize_map(Visitor)
 }
 
 /// Just the version of a graph file, read first to decide how to read the rest.
@@ -214,86 +250,82 @@ impl Graph {
         errors
     }
 
-    /// The groups of nodes that are wired in a cycle, each sorted. Uses Tarjan's algorithm for
-    /// strongly connected components: a component with more than one node, or a node wired to
-    /// itself, is a cycle.
+    /// The groups of nodes that are wired in a cycle. Uses Tarjan's algorithm for strongly
+    /// connected components: a component with more than one node, or a node wired to itself, is
+    /// a cycle. It's iterative rather than recursive, so a long chain of nodes can't overflow the
+    /// stack.
     fn cycles(&self) -> Vec<BTreeSet<NodeId>> {
-        struct State<'a> {
-            graph: &'a Graph,
-            next_index: usize,
-            index: BTreeMap<&'a NodeId, usize>,
-            low_link: BTreeMap<&'a NodeId, usize>,
-            stack: Vec<&'a NodeId>,
-            on_stack: BTreeSet<&'a NodeId>,
-            cycles: Vec<BTreeSet<NodeId>>,
-        }
-
-        impl<'a> State<'a> {
-            fn upstream(&self, id: &NodeId) -> Vec<&'a NodeId> {
-                let node = &self.graph.nodes[id].node;
-                node.inputs()
+        const UNVISITED: usize = usize::MAX;
+        let ids: Vec<&NodeId> = self.nodes.keys().collect();
+        let position: BTreeMap<&NodeId, usize> =
+            ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        let upstream: Vec<Vec<usize>> = ids
+            .iter()
+            .map(|id| {
+                self.nodes[*id]
+                    .node
+                    .inputs()
                     .into_iter()
                     .filter_map(|input| input.wire)
-                    .filter_map(|wire| self.graph.nodes.get_key_value(&wire).map(|(k, _)| k))
+                    .filter_map(|wire| position.get(&wire).copied())
                     .collect()
+            })
+            .collect();
+
+        let mut index = vec![UNVISITED; ids.len()];
+        let mut low_link = vec![0; ids.len()];
+        let mut on_stack = vec![false; ids.len()];
+        let mut stack = Vec::new();
+        let mut next_index = 0;
+        let mut cycles = Vec::new();
+        for root in 0..ids.len() {
+            if index[root] != UNVISITED {
+                continue;
             }
-
-            // Recursion depth is bounded by the length of the longest chain of nodes, which is
-            // small for any graph a person builds.
-            fn visit(&mut self, id: &'a NodeId) {
-                self.index.insert(id, self.next_index);
-                self.low_link.insert(id, self.next_index);
-                self.next_index += 1;
-                self.stack.push(id);
-                self.on_stack.insert(id);
-
-                let mut wired_to_itself = false;
-                for upstream in self.upstream(id) {
-                    if upstream == id {
-                        wired_to_itself = true;
+            // Each frame is a node being visited, and how many of its wires it has followed.
+            let mut frames = vec![(root, 0)];
+            index[root] = next_index;
+            low_link[root] = next_index;
+            next_index += 1;
+            stack.push(root);
+            on_stack[root] = true;
+            while let Some(frame) = frames.last_mut() {
+                let node = frame.0;
+                if let Some(&wire) = upstream[node].get(frame.1) {
+                    frame.1 += 1;
+                    if index[wire] == UNVISITED {
+                        index[wire] = next_index;
+                        low_link[wire] = next_index;
+                        next_index += 1;
+                        stack.push(wire);
+                        on_stack[wire] = true;
+                        frames.push((wire, 0));
+                    } else if on_stack[wire] {
+                        low_link[node] = low_link[node].min(index[wire]);
                     }
-                    if !self.index.contains_key(upstream) {
-                        self.visit(upstream);
-                        let low = self.low_link[id].min(self.low_link[upstream]);
-                        self.low_link.insert(id, low);
-                    } else if self.on_stack.contains(upstream) {
-                        let low = self.low_link[id].min(self.index[upstream]);
-                        self.low_link.insert(id, low);
-                    }
+                    continue;
                 }
-
-                if self.low_link[id] == self.index[id] {
+                frames.pop();
+                if let Some(&(parent, _)) = frames.last() {
+                    low_link[parent] = low_link[parent].min(low_link[node]);
+                }
+                if low_link[node] == index[node] {
                     let mut component = BTreeSet::new();
                     loop {
-                        let member = self.stack.pop().expect("the node itself is on the stack");
-                        self.on_stack.remove(member);
-                        component.insert(member.clone());
-                        if member == id {
+                        let member = stack.pop().expect("the node itself is on the stack");
+                        on_stack[member] = false;
+                        component.insert(ids[member].clone());
+                        if member == node {
                             break;
                         }
                     }
-                    if component.len() > 1 || wired_to_itself {
-                        self.cycles.push(component);
+                    if component.len() > 1 || upstream[node].contains(&node) {
+                        cycles.push(component);
                     }
                 }
             }
         }
-
-        let mut state = State {
-            graph: self,
-            next_index: 0,
-            index: BTreeMap::new(),
-            low_link: BTreeMap::new(),
-            stack: Vec::new(),
-            on_stack: BTreeSet::new(),
-            cycles: Vec::new(),
-        };
-        for id in self.nodes.keys() {
-            if !state.index.contains_key(id) {
-                state.visit(id);
-            }
-        }
-        state.cycles
+        cycles
     }
 }
 
@@ -571,5 +603,166 @@ mod tests {
             })
             .collect();
         assert_eq!(cycles, [expected]);
+    }
+
+    /// Every node `id` can reach by following wires upstream, not counting `id` itself unless
+    /// it's on a cycle.
+    fn reachable(graph: &Graph, id: &NodeId) -> BTreeSet<NodeId> {
+        let mut found = BTreeSet::new();
+        let mut queue = vec![id.clone()];
+        while let Some(next) = queue.pop() {
+            let Some(node) = graph.get(&next) else {
+                continue;
+            };
+            for wire in node
+                .node
+                .inputs()
+                .into_iter()
+                .filter_map(|input| input.wire)
+            {
+                if graph.get(&wire).is_some() && found.insert(wire.clone()) {
+                    queue.push(wire);
+                }
+            }
+        }
+        found
+    }
+
+    #[hegel::test(test_cases = 4_000)]
+    fn validation_matches_a_simple_reference(tc: TestCase) {
+        let graph = tc.draw(gen_any_graph(true));
+        let mut expected = Vec::new();
+        for (id, node) in graph.nodes() {
+            for input in node.node.inputs() {
+                let (node, name) = (id.clone(), input.name);
+                match &input.wire {
+                    None => expected.push(ValidationError::Unwired { node, input: name }),
+                    Some(wire) => match graph.get(wire) {
+                        None => expected.push(ValidationError::MissingNode {
+                            node,
+                            input: name,
+                            missing: wire.clone(),
+                        }),
+                        Some(upstream) if upstream.node.output_type() != input.value_type => {
+                            expected.push(ValidationError::TypeMismatch {
+                                node,
+                                input: name,
+                                expected: input.value_type,
+                                found: upstream.node.output_type(),
+                            });
+                        }
+                        Some(_) => {}
+                    },
+                }
+            }
+        }
+        // A node is on a cycle if it can reach itself. Its cycle is every node it can reach
+        // that can reach it back.
+        let reach: BTreeMap<&NodeId, BTreeSet<NodeId>> = graph
+            .nodes()
+            .map(|(id, _)| (id, reachable(&graph, id)))
+            .collect();
+        let expected_cycles: BTreeSet<BTreeSet<NodeId>> = reach
+            .iter()
+            .filter(|(id, reached)| reached.contains(**id))
+            .map(|(id, reached)| {
+                reached
+                    .iter()
+                    .filter(|other| reach[other].contains(*id))
+                    .cloned()
+                    .collect()
+            })
+            .collect();
+
+        let errors = graph.validate();
+        let (cycles, others): (Vec<_>, Vec<_>) = errors
+            .into_iter()
+            .partition(|error| matches!(error, ValidationError::Cycle { .. }));
+        assert_eq!(others, expected);
+        let cycles: Vec<BTreeSet<NodeId>> = cycles
+            .into_iter()
+            .map(|error| match error {
+                ValidationError::Cycle { nodes } => nodes,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(
+            cycles.len(),
+            expected_cycles.len(),
+            "a cycle was reported twice"
+        );
+        assert_eq!(cycles.into_iter().collect::<BTreeSet<_>>(), expected_cycles);
+    }
+
+    #[test]
+    fn validating_a_long_chain_doesnt_overflow_the_stack() {
+        // IDs sort from the end of the chain to the start, so a depth-first search starting
+        // from the first ID walks the whole chain.
+        let count = 50_000;
+        let id = |i: usize| NodeId::new(format!("exposure_{:08}", count - i));
+        let mut graph = Graph::new();
+        for i in 0..count {
+            let node = crate::node::Exposure {
+                image: (i > 0).then(|| id(i - 1)),
+                stops: 0.0,
+            };
+            graph.insert(
+                id(i),
+                GraphNode {
+                    label: None,
+                    node: node.into(),
+                },
+            );
+        }
+        assert_eq!(
+            graph.validate(),
+            [ValidationError::Unwired {
+                node: id(0),
+                input: "image"
+            }]
+        );
+    }
+
+    #[test]
+    fn repeated_node_ids_are_rejected() {
+        let ron = r#"(version: 1, nodes: {
+            "exposure_k3f9": (node: Exposure(stops: 1.0)),
+            "exposure_k3f9": (node: Exposure(stops: 2.0)),
+        })"#;
+        assert!(Graph::from_ron(ron).is_err());
+    }
+
+    #[hegel::test(test_cases = 4_000)]
+    fn parameters_round_trip_exactly(tc: TestCase) {
+        // Including -0.0, infinities and subnormals, which compare equal to other values or
+        // could be printed imprecisely.
+        let stops = tc.draw(gs::floats::<f32>().allow_nan(false));
+        let mut graph = Graph::new();
+        let id = graph.add(crate::node::Exposure { image: None, stops });
+        let read = Graph::from_ron(&graph.to_ron().unwrap()).unwrap();
+        let Node::Exposure(exposure) = &read.get(&id).unwrap().node else {
+            panic!("{read:?}");
+        };
+        assert_eq!(exposure.stops.to_bits(), stops.to_bits());
+    }
+
+    #[test]
+    fn omitted_parameters_take_their_defaults() {
+        for node in Node::defaults() {
+            let mut graph = Graph::new();
+            graph.add(node.clone());
+            let ron = graph.to_ron().unwrap();
+            // The node type's name in the file, such as `ViewTransform`.
+            let name = ron
+                .split("node: ")
+                .nth(1)
+                .unwrap()
+                .split('(')
+                .next()
+                .unwrap();
+            let minimal = format!(r#"(version: 1, nodes: {{ "x": (node: {name}()) }})"#);
+            let read = Graph::from_ron(&minimal).unwrap();
+            assert_eq!(read.get(&NodeId::new("x")).unwrap().node, node, "{minimal}");
+        }
     }
 }

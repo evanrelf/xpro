@@ -226,7 +226,7 @@ pub enum Multipliers {
     #[default]
     AsShot,
     /// Multipliers for red, green and blue.
-    Custom([f32; 3]),
+    Custom { red: f32, green: f32, blue: f32 },
 }
 
 impl WhiteBalance {
@@ -234,7 +234,7 @@ impl WhiteBalance {
     pub fn evaluate(&self, mosaic: &Mosaic) -> Mosaic {
         let multipliers = match self.multipliers {
             Multipliers::AsShot => mosaic.as_shot_white_balance,
-            Multipliers::Custom(multipliers) => multipliers,
+            Multipliers::Custom { red, green, blue } => [red, green, blue],
         };
         develop::white_balance(mosaic, multipliers)
     }
