@@ -1,7 +1,7 @@
 //! Edits: graphs with an input bound to an image file, stored in edit files next to them.
 
 use crate::{
-    eval::{IMAGE_INPUT, Input, Inputs, evaluate_actions, execute},
+    eval::{IMAGE_INPUT, Input, Inputs, render},
     graph::{FORMAT_VERSION, Format, Graph},
     node::{Node, default_graph},
 };
@@ -82,18 +82,8 @@ impl Edit {
     /// Writes nothing if the graph has errors, or if any file it writes already exists. Returns
     /// the paths written.
     pub fn render(&self, image_path: &Path) -> anyhow::Result<Vec<PathBuf>> {
-        let errors = self.graph.validate();
-        if !errors.is_empty() {
-            let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
-            bail!("The graph has errors:\n{}", errors.join("\n"));
-        }
-        let actions = evaluate_actions(&self.graph, &self.inputs(image_path))?;
         let dir = image_path.parent().unwrap_or(Path::new(""));
-        execute(&actions, dir)?;
-        Ok(actions
-            .iter()
-            .map(|action| dir.join(action.target()))
-            .collect())
+        render(&self.graph, &self.inputs(image_path), dir)
     }
 
     /// The path of the edit file for an image file: its full filename plus `.xpro-edit`, so a

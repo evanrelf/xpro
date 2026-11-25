@@ -281,6 +281,23 @@ impl Evaluator {
     }
 }
 
+/// Renders a graph: evaluates every output node, and executes the actions they describe,
+/// resolving relative paths against `dir`. Writes nothing if the graph has errors, or if any
+/// file it writes already exists. Returns the paths written.
+pub fn render(graph: &Graph, inputs: &Inputs, dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let errors = graph.validate();
+    if !errors.is_empty() {
+        let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        bail!("The graph has errors:\n{}", errors.join("\n"));
+    }
+    let actions = evaluate_actions(graph, inputs)?;
+    execute(&actions, dir)?;
+    Ok(actions
+        .iter()
+        .map(|action| dir.join(action.target()))
+        .collect())
+}
+
 /// Executes actions, resolving relative paths against `dir`. Checks first that none would
 /// overwrite an existing file, or a file another of the actions writes, so either all of them
 /// run or none do (unless one fails partway).
