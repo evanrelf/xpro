@@ -7,8 +7,7 @@ use crate::{
 use ::image::{ImageEncoder as _, codecs::png::PngEncoder};
 use anyhow::Context as _;
 use std::{
-    fs::File,
-    io::BufWriter,
+    io::{BufWriter, Write as _},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -39,11 +38,15 @@ impl Action {
     }
 }
 
-/// Writes an image as a PNG. Fails rather than overwrite an existing file.
+/// Writes an image as a PNG. Fails rather than overwrite an existing file. The PNG is written
+/// to a temporary file first and moved into place when it's complete, so an interrupted write
+/// never leaves part of one behind.
 pub fn write_png(image: &Srgb8Image, path: &Path) -> anyhow::Result<()> {
-    let file =
-        File::create_new(path).with_context(|| format!("Failed to create {}", path.display()))?;
-    let mut writer = BufWriter::new(file);
+    let context = || format!("Failed to write {}", path.display());
+    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty());
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(dir.unwrap_or(Path::new("."))).with_context(context)?;
+    let mut writer = BufWriter::new(temporary.as_file_mut());
     PngEncoder::new(&mut writer)
         .write_image(
             image.pixels.as_flattened(),
@@ -51,7 +54,13 @@ pub fn write_png(image: &Srgb8Image, path: &Path) -> anyhow::Result<()> {
             u32::try_from(image.height)?,
             ::image::ExtendedColorType::Rgb8,
         )
-        .with_context(|| format!("Failed to write {}", path.display()))?;
-    writer.into_inner()?.sync_all()?;
+        .with_context(context)?;
+    writer.flush().with_context(context)?;
+    drop(writer);
+    temporary.as_file().sync_all().with_context(context)?;
+    temporary
+        .persist_noclobber(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("Failed to create {}", path.display()))?;
     Ok(())
 }

@@ -434,6 +434,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         execute(&actions, dir.path()).unwrap();
         let Action::WritePng { image, .. } = &*actions[0];
+        // Only the PNG, no temporary files.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
         let written = ::image::open(dir.path().join("out.png")).unwrap().to_rgb8();
         let expected = crate::view::encode_srgb8(image).unwrap();
         assert_eq!(written.as_raw(), expected.pixels.as_flattened());
