@@ -9,10 +9,11 @@ use ron::{extensions::Extensions, ser::PrettyConfig};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt,
+    fmt, fs,
+    path::Path,
 };
 
-/// The version of the graph file format this code reads and writes.
+/// The version of the graph file and edit file formats this code reads and writes.
 pub const FORMAT_VERSION: u32 = 1;
 
 /// A node's unique name within its graph, such as `exposure_k3f9`: its node type in snake case,
@@ -59,13 +60,35 @@ pub struct GraphNode {
     pub node: Node,
 }
 
-/// How a graph is laid out in a graph file.
+/// How a graph is laid out in a graph file or an edit file.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Format {
-    version: u32,
+pub(crate) struct Format {
+    pub version: u32,
+    /// For an edit, the graph input bound to the image file that the edit file is next to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
     #[serde(deserialize_with = "deserialize_unique")]
-    nodes: BTreeMap<NodeId, GraphNode>,
+    pub nodes: BTreeMap<NodeId, GraphNode>,
+}
+
+impl Format {
+    pub fn to_ron(&self) -> anyhow::Result<String> {
+        let config = PrettyConfig::new().indentor("    ");
+        Ok(ron_options().to_string_pretty(self, config)? + "\n")
+    }
+
+    /// Reads a graph file or an edit file, after checking that its format version is supported.
+    pub fn from_ron(ron: &str) -> anyhow::Result<Self> {
+        let options = ron_options();
+        let Version { version } = options
+            .from_str(ron)
+            .context("Failed to read the format version")?;
+        if version != FORMAT_VERSION {
+            bail!("Format version {version} isn't supported (expected version {FORMAT_VERSION})");
+        }
+        Ok(options.from_str(ron)?)
+    }
 }
 
 /// Reads a map of nodes, failing if a node ID appears more than once rather than keeping only
@@ -103,7 +126,7 @@ where
     deserializer.deserialize_map(Visitor)
 }
 
-/// Just the version of a graph file, read first to decide how to read the rest.
+/// Just the version of a graph file or an edit file, read first to decide how to read the rest.
 #[derive(Deserialize)]
 struct Version {
     version: u32,
@@ -186,27 +209,38 @@ impl Graph {
 
     /// Writes the graph in the graph file format: human-readable RON.
     pub fn to_ron(&self) -> anyhow::Result<String> {
-        let format = Format {
+        Format {
             version: FORMAT_VERSION,
+            input: None,
             nodes: self.nodes.clone(),
-        };
-        let config = PrettyConfig::new().indentor("    ");
-        Ok(ron_options().to_string_pretty(&format, config)? + "\n")
+        }
+        .to_ron()
     }
 
     /// Reads a graph written in the graph file format.
     pub fn from_ron(ron: &str) -> anyhow::Result<Self> {
-        let options = ron_options();
-        let Version { version } = options
-            .from_str(ron)
-            .context("Failed to read the graph's format version")?;
-        if version != FORMAT_VERSION {
-            bail!(
-                "Graph format version {version} isn't supported (expected version {FORMAT_VERSION})"
-            );
+        let format = Format::from_ron(ron).context("Failed to read graph")?;
+        if format.input.is_some() {
+            bail!("Expected a graph, but found an edit");
         }
-        let Format { version: _, nodes } = options.from_str(ron).context("Failed to read graph")?;
-        Ok(Self { nodes })
+        Ok(Self {
+            nodes: format.nodes,
+        })
+    }
+
+    /// Reads a graph file.
+    pub fn read(path: &Path) -> anyhow::Result<Self> {
+        let ron = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        Self::from_ron(&ron).with_context(|| format!("Failed to read {}", path.display()))
+    }
+
+    pub(crate) fn from_nodes(nodes: BTreeMap<NodeId, GraphNode>) -> Self {
+        Self { nodes }
+    }
+
+    pub(crate) fn into_nodes(self) -> BTreeMap<NodeId, GraphNode> {
+        self.nodes
     }
 
     /// Finds everything wrong with the graph: unwired inputs, wires to missing nodes, wires

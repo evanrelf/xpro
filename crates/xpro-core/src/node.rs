@@ -6,10 +6,11 @@
 use crate::{
     action::Action,
     develop,
-    eval::{Input, Inputs, expand_path_template},
+    eval::{IMAGE_INPUT, Input, Inputs},
     geometry,
     graph::{Graph, NodeId},
     image::Image,
+    path_template::expand_path_template,
     raw::{self, Mosaic},
     value::{Value, ValueType},
     view::{self, ToneCurve},
@@ -196,7 +197,7 @@ pub struct ReadRaw {
 impl Default for ReadRaw {
     fn default() -> Self {
         Self {
-            input: "image".to_owned(),
+            input: IMAGE_INPUT.to_owned(),
         }
     }
 }
@@ -352,7 +353,7 @@ impl Default for WritePng {
     fn default() -> Self {
         Self {
             image: None,
-            path: "{image}.png".to_owned(),
+            path: format!("{{{IMAGE_INPUT}}}.png"),
         }
     }
 }
