@@ -56,6 +56,7 @@ fn render(raw_path: &Path, png_path: &Path) -> anyhow::Result<()> {
     let start = Instant::now();
     let output = WritePng {
         path: png_path.to_owned(),
+        ..WritePng::default()
     };
     output.evaluate(Arc::new(display)).execute()?;
     tracing::info!(elapsed = ?start.elapsed(), "Wrote {}", png_path.display());

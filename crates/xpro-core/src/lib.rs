@@ -2,6 +2,7 @@ pub mod action;
 pub mod color;
 pub mod develop;
 pub mod geometry;
+pub mod graph;
 pub mod image;
 pub mod node;
 pub mod raw;

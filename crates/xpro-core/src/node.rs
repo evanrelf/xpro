@@ -1,21 +1,168 @@
 //! Node types: each a struct of typed parameters, with a function that evaluates it.
+//!
+//! A node's inputs are fields too, each naming the node whose output it's wired to, or `None`
+//! if it isn't wired yet.
 
 use crate::{
     action::Action,
     develop, geometry,
+    graph::NodeId,
     image::Image,
     raw::{self, Mosaic},
+    value::ValueType,
     view::{self, ToneCurve},
 };
 use anyhow::Context as _;
+use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-/// Reads a raw file into a mosaic.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ReadRaw {}
+/// A node's input port.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputPort {
+    pub name: &'static str,
+    /// The type of value the port accepts.
+    pub value_type: ValueType,
+    /// The node whose output is wired to this port, if any.
+    pub wire: Option<NodeId>,
+}
+
+/// What every node type knows about its ports.
+pub trait Ports {
+    /// The node's input ports, in a fixed order.
+    fn inputs(&self) -> Vec<InputPort>;
+
+    /// The wires to the node's input ports, in the same order as [`Ports::inputs`].
+    fn wires_mut(&mut self) -> Vec<&mut Option<NodeId>>;
+
+    /// The type of value the node's output provides.
+    fn output_type(&self) -> ValueType;
+}
+
+/// Declares node types: the [`Node`] enum, and the basics of each node type.
+macro_rules! node_types {
+    ($($node_type:ident: $name:literal, $id_prefix:literal;)*) => {
+        /// A node: one of the built-in node types.
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+        pub enum Node {
+            $($node_type($node_type),)*
+        }
+
+        impl Node {
+            /// One node of each type, with default parameters and no wires.
+            #[must_use]
+            pub fn defaults() -> Vec<Self> {
+                vec![$(Self::$node_type($node_type::default()),)*]
+            }
+
+            /// The node type's name, as people read it.
+            #[must_use]
+            pub fn type_name(&self) -> &'static str {
+                match self {
+                    $(Self::$node_type(_) => $name,)*
+                }
+            }
+
+            /// The node type's name in snake case, which starts the IDs of nodes of this type.
+            #[must_use]
+            pub fn id_prefix(&self) -> &'static str {
+                match self {
+                    $(Self::$node_type(_) => $id_prefix,)*
+                }
+            }
+        }
+
+        impl Ports for Node {
+            fn inputs(&self) -> Vec<InputPort> {
+                match self {
+                    $(Self::$node_type(node) => node.inputs(),)*
+                }
+            }
+
+            fn wires_mut(&mut self) -> Vec<&mut Option<NodeId>> {
+                match self {
+                    $(Self::$node_type(node) => node.wires_mut(),)*
+                }
+            }
+
+            fn output_type(&self) -> ValueType {
+                match self {
+                    $(Self::$node_type(node) => node.output_type(),)*
+                }
+            }
+        }
+
+        $(
+            impl From<$node_type> for Node {
+                fn from(node: $node_type) -> Self {
+                    Self::$node_type(node)
+                }
+            }
+        )*
+    };
+}
+
+node_types! {
+    ReadRaw: "Read Raw", "read_raw";
+    WhiteBalance: "White Balance", "white_balance";
+    Demosaic: "Demosaic", "demosaic";
+    CameraToWorkingSpace: "Camera to Working Space", "camera_to_working_space";
+    Orient: "Orient", "orient";
+    Exposure: "Exposure", "exposure";
+    ViewTransform: "View Transform", "view_transform";
+    WritePng: "Write PNG", "write_png";
+}
+
+/// Implements [`Ports`] for a node type whose input ports are all fields of type
+/// `Option<NodeId>`.
+macro_rules! ports {
+    ($node_type:ty, [$($input:ident: $value_type:ident),*] -> $output:ident) => {
+        impl Ports for $node_type {
+            fn inputs(&self) -> Vec<InputPort> {
+                vec![$(InputPort {
+                    name: stringify!($input),
+                    value_type: ValueType::$value_type,
+                    wire: self.$input.clone(),
+                }),*]
+            }
+
+            fn wires_mut(&mut self) -> Vec<&mut Option<NodeId>> {
+                vec![$(&mut self.$input),*]
+            }
+
+            fn output_type(&self) -> ValueType {
+                ValueType::$output
+            }
+        }
+    };
+}
+
+ports!(ReadRaw, [] -> Mosaic);
+ports!(WhiteBalance, [mosaic: Mosaic] -> Mosaic);
+ports!(Demosaic, [mosaic: Mosaic] -> SceneReferredImage);
+ports!(CameraToWorkingSpace, [image: SceneReferredImage] -> SceneReferredImage);
+ports!(Orient, [image: SceneReferredImage] -> SceneReferredImage);
+ports!(Exposure, [image: SceneReferredImage] -> SceneReferredImage);
+ports!(ViewTransform, [image: SceneReferredImage] -> DisplayReferredImage);
+ports!(WritePng, [image: DisplayReferredImage] -> Action);
+
+/// Reads a raw file, bound to one of the graph's inputs, into a mosaic.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReadRaw {
+    /// The name of the graph input to read.
+    pub input: String,
+}
+
+impl Default for ReadRaw {
+    fn default() -> Self {
+        Self {
+            input: "image".to_owned(),
+        }
+    }
+}
 
 impl ReadRaw {
     pub fn evaluate(&self, path: &Path) -> anyhow::Result<Mosaic> {
@@ -24,13 +171,16 @@ impl ReadRaw {
 }
 
 /// Scales a mosaic's color channels so that neutral surfaces come out neutral.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct WhiteBalance {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mosaic: Option<NodeId>,
     pub multipliers: Multipliers,
 }
 
 /// Which white balance multipliers to use.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Multipliers {
     /// The camera's choice, stored in the raw file.
     #[default]
@@ -52,8 +202,12 @@ impl WhiteBalance {
 
 /// Fills in the colors each photosite didn't measure, turning a mosaic into a scene-referred
 /// image in the camera's own RGB.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Demosaic {}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Demosaic {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mosaic: Option<NodeId>,
+}
 
 impl Demosaic {
     #[must_use]
@@ -63,8 +217,12 @@ impl Demosaic {
 }
 
 /// Converts a scene-referred image from the camera's own RGB to the working space.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct CameraToWorkingSpace {}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CameraToWorkingSpace {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<NodeId>,
+}
 
 impl CameraToWorkingSpace {
     pub fn evaluate(&self, image: &Image) -> anyhow::Result<Image> {
@@ -73,8 +231,12 @@ impl CameraToWorkingSpace {
 }
 
 /// Rotates and flips an image so it displays upright, as the camera recorded.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Orient {}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Orient {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<NodeId>,
+}
 
 impl Orient {
     #[must_use]
@@ -84,8 +246,11 @@ impl Orient {
 }
 
 /// Brightens or darkens a scene-referred image.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Exposure {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<NodeId>,
     /// How much to brighten, in stops. Each stop doubles the light. Negative values darken.
     pub stops: f32,
 }
@@ -98,8 +263,11 @@ impl Exposure {
 }
 
 /// Turns a scene-referred image into a display-referred one, rolling off the highlights.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ViewTransform {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<NodeId>,
     /// How steep the tone curve is. Higher values darken shadows and brighten highlights more.
     pub contrast: f32,
     /// How many stops above middle gray becomes display white.
@@ -109,6 +277,7 @@ pub struct ViewTransform {
 impl Default for ViewTransform {
     fn default() -> Self {
         Self {
+            image: None,
             contrast: 1.5,
             white: 4.0,
         }
@@ -128,8 +297,11 @@ impl ViewTransform {
 }
 
 /// An output node that writes a display-referred image to a PNG file.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct WritePng {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<NodeId>,
     pub path: PathBuf,
 }
 
@@ -168,6 +340,7 @@ pub fn develop(path: &Path) -> anyhow::Result<Image> {
     let image = Orient::default().evaluate(&image);
     let exposure = Exposure {
         stops: BASELINE_EXPOSURE,
+        ..Exposure::default()
     };
     Ok(exposure.evaluate(&image))
 }

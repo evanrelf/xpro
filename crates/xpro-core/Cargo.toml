@@ -5,9 +5,12 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
+fastrand = { workspace = true }
 image = { workspace = true }
 rawler = { workspace = true }
 rayon = { workspace = true }
+ron = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 hegeltest = { workspace = true }
