@@ -15,15 +15,15 @@ a basic view transform, and show it with zoom and pan.
 
 ## 2. A graph, headless first
 
-The typed graph model, evaluation and caching, and sidecar files. Add a handful
+The typed graph model, evaluation and caching, and edit files. Add a handful
 of basic nodes, from raw input through white balance, exposure and a view
 transform to a file output. The GUI is minimal: a node list, an inspector and
 the viewer. The CLI runs a graph. The evaluator is designed for regions,
 preview scales and cancellation from the start, even before the canvas uses
 them.
 
-**Done when** you can edit a photo, save it, and rerun the same graph on a
-different photo from the command line.
+**Done when** you can edit an image file, save the edit, and rerun the same
+graph on a different image file from the command line.
 
 The working plan is in [milestone-2.md](milestone-2.md).
 
@@ -44,5 +44,5 @@ milestone never really ends.
 ## Later (order to be decided)
 
 - **Masks**
-- **Multiple source images:** stacking, exposure fusion, layouts
+- **Multiple inputs:** stacking, exposure fusion, layouts
 - **Composites and presets**, including linked presets

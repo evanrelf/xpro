@@ -2,12 +2,12 @@
 
 The working plan for [milestone 2, "A graph, headless first"](roadmap.md). It
 records the decisions already made and the steps that remain, so work can pick
-up without prior context. Read [design.md](design.md) first. Update this file as
-steps land, and fold lasting decisions into the design doc or glossary as
-they're settled.
+up without prior context. Read [design.md](design.md) first, and use the terms
+in [glossary.md](glossary.md). Update this file as steps land, and fold lasting
+decisions into the design doc or glossary as they're settled.
 
-**Done when** you can edit a photo, save it, and rerun the same graph on a
-different photo from the command line.
+**Done when** you can edit an image file, save the edit, and rerun the same
+graph on a different image file from the command line.
 
 ## Where things start
 
@@ -24,7 +24,7 @@ Milestone 1 left a fixed pipeline, not a graph. The core crate has these pieces:
 - **Output:** writing a PNG, refusing to overwrite.
 
 The CLI's `render` command and the app both call this pipeline directly. The
-app also keeps the photo at several halved sizes so it can draw sharply at any
+app also keeps the image at several halved sizes so it can draw sharply at any
 zoom.
 
 ## Decisions
@@ -35,24 +35,23 @@ zoom.
   these primitives.
 - **Built-in nodes are an enum of plain structs**, one variant per node type,
   each struct holding its typed parameters. This keeps the file format simple
-  through serialization and keeps matching exhaustive. Third-party nodes, if they
-  ever come, can be added as a dynamic variant without changing the rest.
-- **A node's inputs live inside the node**, as fields next to its parameters,
-  rather than in a separate list of connections.
+  through serialization and keeps matching exhaustive. Third-party nodes, if
+  they ever come, can be added as a dynamic variant without changing the rest.
+- **A node's inputs live inside the node**, as fields naming the outputs they're
+  wired to, next to its parameters, rather than in a separate list of wires.
 - **Node IDs are generated, readable and unordered:** the node type in snake
   case plus a short random suffix, like `exposure_k3f9`. Nobody types them by
   hand. The random suffix avoids encoding the order nodes were added. A node can
   also have an optional label, a human-readable name that doesn't have to be
   unique.
-- **Sidecars are named after the photo's full filename**, including its
-  extension, so a raw file and a JPEG with the same name get separate edits.
-  Xpro may use more than one file extension for different kinds of file, for
-  example a sidecar (a graph bound to a sibling photo) versus a standalone
-  graph. Don't force everything into one extension. The names are decided in
-  step 0.
-- **The command line is sidecar-aware.** `render PHOTO` uses the photo's
-  sidecar if it has one, otherwise a default graph. A flag applies some other
-  graph instead, for example another photo's sidecar.
+- **Each kind of file gets its own extension.** A graph file is `.xpro`. An
+  edit file is named after its image file's full filename plus `.xpro-edit`, so
+  a raw file and a JPEG with the same name get separate edits:
+  `DSC_4362.NEF.xpro-edit`. Don't force different kinds of file into one
+  extension.
+- **The command line is edit-aware.** Rendering an image file uses its edit
+  file if it has one, otherwise a default graph. A flag applies some other graph
+  instead, such as a graph file or another image file's edit.
 - **Headless first.** The core, file format, evaluator and CLI come before the
   GUI, so the GUI lands on a settled core.
 
@@ -60,16 +59,11 @@ zoom.
 
 Each step is one or a few commits, tested headlessly before moving on.
 
-### 0. Glossary
+### 0. Glossary (done)
 
-Write `docs/glossary.md` with the canonical terms for Xpro's concepts, then use
-only those terms in code, the CLI and docs. Candidates include photo, raw file,
-graph, node, node type, input, output, parameter, connection, label, edit,
-sidecar, value, scene-referred image, display-referred image, mosaic, cast node,
-evaluate, execute, action, viewer, region, preview scale, composite and preset.
-Many are already used in the design doc. This is also where the file kinds and
-their extensions get named. Draft it, then have the user review it before
-building on it.
+[glossary.md](glossary.md) holds the canonical terms, and [story.md](story.md)
+shows them in use. It's deliberately small: add a term when a step needs one,
+with the user's review, rather than in advance.
 
 ### 1. Values and nodes, without a graph
 
@@ -78,10 +72,11 @@ building on it.
   own RGB and becomes Rec.2020 after conversion. Values also carry the metadata
   later nodes need, such as the as-shot white balance, the camera color matrix
   and the orientation.
-- **Node structs,** each with typed parameters and an evaluate function: raw
-  input, white balance, demosaic, camera to working space, orient, exposure,
-  view transform and PNG output. The baseline exposure becomes the default for
-  the exposure node in the default graph, no longer a hidden step.
+- **Node structs,** each with typed parameters and an evaluate function:
+  reading a raw file, white balance, demosaic, camera to working space,
+  orient, exposure, view transform and a PNG output node. The baseline exposure
+  becomes the default for the exposure node in the default graph, no longer a
+  hidden step.
 - Chain the nodes in code to replace the fixed pipeline. Rendered output must
   stay the same, which makes the refactor easy to verify.
 
@@ -104,9 +99,9 @@ building on it.
 
 ### 4. Command line
 
-- Sidecar-aware rendering as described under Decisions.
-- Possibly a command that writes the default graph out as a sidecar, so edits
-  can be made by hand before the GUI exists.
+- Edit-aware rendering as described under Decisions.
+- Possibly a command that writes the default graph out as an edit file, so
+  edits can be made by hand before the GUI exists.
 
 ### 5. Caching
 
@@ -118,15 +113,16 @@ building on it.
 
 - Requests carry a region, a preview scale and cancellation through the
   evaluator, and nodes declare their locality.
-- Add a preview-scale path for raw input. For example, develop a half-size
-  image straight from the mosaic by turning each 2×2 block of photosites into
-  one pixel. This is also where faster photo loading in the app belongs.
+- Add a preview-scale path for reading raw files. For example, develop a
+  half-size image straight from the mosaic by turning each 2×2 block of
+  photosites into one pixel. This is also where faster loading in the app
+  belongs.
 
 ### 7. GUI
 
 - The app runs on the evaluator. It gets a node list, an inspector with a
   control for each parameter, and a viewer showing the selected node.
-- Edits save to the sidecar. Autosave comes in milestone 3.
+- Edits save to their edit files. Autosave comes in milestone 3.
 
 ## Conventions
 
@@ -136,7 +132,7 @@ These come from the project's `CLAUDE.md` and practice so far.
   about 200 ms per test.
 - **The UI is tested headlessly** with `egui_kittest`, driving real input
   events and checking rendered pixels.
-- **Real photos:** the sample-photo test runs on real raw files when pointed at
-  one, and can save renders for inspection.
+- **Real raw files:** one test develops a real raw file when pointed at one,
+  and can save renders for inspection.
 - **Small, incremental commits:** something simple and evidently correct first,
   then edge cases and optimizations.

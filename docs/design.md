@@ -71,11 +71,11 @@ Modular, yes, but modular the way Teenage Engineering would build it.
 
 ## Goals
 
-- **Raw photo in, images out.** The graph *is* the edit.
+- **Raw file in, image files out.** The graph *is* the edit.
 - **See any point in the pipeline.** Every node shows a thumbnail of its
   result, and a large viewer shows whichever node is selected.
-- **Outputs are nodes.** Export settings live in the graph, not in a modal
-  dialog, and a graph can have any number of outputs.
+- **Exporting is done by nodes.** Export settings live in the graph as output
+  nodes, not in a modal dialog, and a graph can have any number of them.
 - **Headless as well as interactive.** Any graph can run from the command line.
 
 ## Non-goals
@@ -104,17 +104,18 @@ These aren't planned, but designs must not rule them out:
 ### Graphs and edits
 
 A **graph** is a directed acyclic graph of nodes. It's pure: the same inputs
-and parameters always produce the same outputs. A graph's source photos are
-inputs to it, not part of the graph itself, so the same graph can be applied to
-any photo. An **edit** is a graph bound to a particular photo. It's stored as human-readable text in a **sidecar** file
-next to the photo, and the original is never modified.
+and parameters always produce the same values. A graph's inputs, such as the
+image files it develops, aren't part of the graph itself, so the same graph can
+be applied to any image file. An **edit** is a graph with one of its inputs
+bound to a particular image file. It's stored as human-readable text in an
+**edit file** next to that image file, and the image file is never modified.
 
 The **viewer** is part of the UI, not of the graph. It shows the selected
 node's result, or a pinned one.
 
 ### Evaluating vs. executing
 
-Every node is a pure function, including outputs. **Evaluating** a graph
+Every node is a pure function, including output nodes. **Evaluating** a graph
 computes values and has no side effects. An output node evaluates to a
 *description* of an action, such as "write this image here, with these
 settings". **Executing** carries those actions out, and only happens when the
@@ -123,10 +124,10 @@ the user's files as a side effect.
 
 ### Typed ports
 
-Nodes behave like functions, with typed inputs, outputs and parameters. An
-edge can only connect compatible ports. Converting between types is done by
-explicit **cast nodes** that are visible in the graph, never by silent
-coercion. Some nodes are generic. Crop, for example, works on any kind of
+Nodes behave like functions, with typed inputs, outputs and parameters. Only
+ports with compatible value types can be wired together. Converting between
+types is done by explicit **cast nodes** that are visible in the graph, never by
+silent coercion. Some nodes are generic. Crop, for example, works on any kind of
 image and returns the same kind.
 
 The core value types are *scene-referred image*, *display-referred image* and
@@ -137,9 +138,9 @@ The core value types are *scene-referred image*, *display-referred image* and
 Raw data measures light. Values are proportional to the light in the scene,
 with no upper limit. That's **scene-referred** data. Screens and image files
 need **display-referred** data: values that describe how bright something
-should *look* within a display's range, with highlights already rolled off. A **view
-transform** (tone mapping) converts the first into the second. It's the most
-important cast node.
+should *look* within a display's range, with highlights already rolled off. A
+**view transform** (tone mapping) converts the first into the second. It's the
+most important cast node.
 
 Some operations are only correct on one side of that step:
 
@@ -167,7 +168,7 @@ are relative to the image (for example, a blur radius as a fraction of the
 image's size), so the same graph works on any camera's files and on
 reduced-size previews. Some things really are tied to physical size, though.
 Seam carving works on pixels, and sharpening depends on how big the result
-will be shown, whether that's an output's pixel dimensions or a print on a
+will be shown, whether that's an output node's pixel dimensions or a print on a
 gallery wall. Those use whatever units fit.
 
 ### Locality
@@ -190,7 +191,7 @@ Global nodes may look different at preview size than at full size.
 ### Geometry
 
 Nodes that change geometry (crop, rotate, resize, seam carving) record how
-their output pixels map back to the original photo. Anything anchored to image
+their output pixels map back to the original image. Anything anchored to image
 content, such as a mask, can then stay aligned through any chain of geometry
 changes.
 
@@ -217,7 +218,7 @@ nodes ship as graphs of primitives that you can unpack when you outgrow them.
   over the same core. If something can't be done headlessly, it's in the wrong
   layer.
 - **The framework exists for interop and abstraction.** A single typed
-  interface lets any node connect to any compatible node without knowing
+  interface lets any node be wired to any compatible node without knowing
   anything about it. Behind that interface, a node might be a few lines of
   straightforward code, or a heavily optimized SIMD or GPU implementation. That
   complexity stays sealed inside the node and never spreads across the app.
@@ -253,8 +254,8 @@ Large design questions that have been deliberately postponed:
    a direction, not yet a proven design. In particular, it's unclear how
    content-anchored masks behave through operations that can't be cleanly
    inverted, like seam carving. Relative parameters raise the same question:
-   after a crop, is a vignette or grain size relative to the original photo or
+   after a crop, is a vignette or grain size relative to the original image or
    to the cropped image?
-3. **Graphs with several source photos.** A sidecar belongs to one photo, so
-   where does a graph that merges several photos (exposure fusion, stacking)
-   live, and how does it refer to its inputs?
+3. **Edits with several inputs.** An edit file belongs to one image file, so
+   where does an edit that merges several image files (exposure fusion,
+   stacking) live, and how does it refer to its other inputs?
