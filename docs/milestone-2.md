@@ -134,11 +134,15 @@ with the user's review, rather than in advance.
   photosites into one pixel. This is also where faster loading in the app
   belongs.
 
-### 7. GUI
+### 7. GUI (done)
 
 - The app runs on the evaluator. It gets a node list, an inspector with a
   control for each parameter, and a viewer showing the selected node.
 - Edits save to their edit files. Autosave comes in milestone 3.
+- The viewer shows any value: a mosaic as gray, and a scene-referred image
+  through the default view transform, so it looks like the finished picture.
+- Adding, removing and rewiring nodes waits for the canvas in milestone 3.
+  Until then, the graph can be changed by editing the edit file by hand.
 
 ## Conventions
 
