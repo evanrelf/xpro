@@ -5,7 +5,8 @@ use crate::{
     graph::{Graph, NodeId},
     node::Ports as _,
     raw::Mosaic,
-    value::Value,
+    request::{PreviewScale, Request},
+    value::{Value, ValueType},
 };
 use anyhow::{Context as _, bail};
 use std::{
@@ -87,7 +88,7 @@ impl Inputs {
 /// Computes a node's value, computing the values of the nodes it's wired to first. Shares no
 /// work with other evaluations; use an [`Evaluator`] for that.
 pub fn evaluate(graph: &Graph, inputs: &Inputs, id: &NodeId) -> anyhow::Result<Value> {
-    Evaluator::new(0).evaluate(graph, inputs, id)
+    Evaluator::new(0).evaluate(graph, inputs, id, &Request::default())
 }
 
 /// Evaluates every output node, returning the actions they describe, in order of their IDs.
@@ -141,21 +142,24 @@ impl Evaluator {
         self.cache.values().map(|entry| entry.value.size()).sum()
     }
 
-    /// Computes a node's value, reusing cached values where possible.
+    /// Computes a node's value as requested, reusing cached values where possible.
     pub fn evaluate(
         &mut self,
         graph: &Graph,
         inputs: &Inputs,
         id: &NodeId,
+        request: &Request,
     ) -> anyhow::Result<Value> {
         self.clock += 1;
         let inputs_key = inputs.key();
-        let result = self.evaluate_with_path(graph, inputs, inputs_key, id, &mut Vec::new());
+        let result =
+            self.evaluate_with_path(graph, inputs, inputs_key, request, id, &mut Vec::new());
         self.trim();
         result.map(|(value, _)| value)
     }
 
-    /// Evaluates every output node, returning the actions they describe, in order of their IDs.
+    /// Evaluates every output node at full size, returning the actions they describe, in order
+    /// of their IDs.
     pub fn evaluate_actions(
         &mut self,
         graph: &Graph,
@@ -163,11 +167,13 @@ impl Evaluator {
     ) -> anyhow::Result<Vec<Arc<Action>>> {
         self.clock += 1;
         let inputs_key = inputs.key();
+        let request = Request::default();
         let result = graph
             .nodes()
             .filter(|(_, node)| node.node.is_output())
             .map(|(id, _)| {
-                match self.evaluate_with_path(graph, inputs, inputs_key, id, &mut Vec::new())? {
+                let path = &mut Vec::new();
+                match self.evaluate_with_path(graph, inputs, inputs_key, &request, id, path)? {
                     (Value::Action(action), _) => Ok(action),
                     (value, _) => {
                         bail!(
@@ -189,6 +195,7 @@ impl Evaluator {
         graph: &Graph,
         inputs: &Inputs,
         inputs_key: Key,
+        request: &Request,
         id: &NodeId,
         path: &mut Vec<NodeId>,
     ) -> anyhow::Result<(Value, Key)> {
@@ -207,7 +214,7 @@ impl Evaluator {
                 let wire = input
                     .wire
                     .with_context(|| format!("{id}'s {} input isn't wired", input.name))?;
-                self.evaluate_with_path(graph, inputs, inputs_key, &wire, path)
+                self.evaluate_with_path(graph, inputs, inputs_key, request, &wire, path)
             })
             .collect::<anyhow::Result<Vec<(Value, Key)>>>();
         path.pop();
@@ -224,16 +231,23 @@ impl Evaluator {
         for (_, key) in &upstream {
             key.hash(&mut hasher);
         }
+        // A mosaic is always full size, so it's shared by every scale.
+        let scale = match node.output_type() {
+            ValueType::Mosaic => PreviewScale::FULL,
+            _ => request.scale,
+        };
+        scale.hash(&mut hasher);
         let key = hasher.finish();
 
         if let Some(entry) = self.cache.get_mut(&key) {
             entry.last_used = self.clock;
             return Ok((entry.value.clone(), key));
         }
+        request.cancel.check()?;
         let values: Vec<Value> = upstream.into_iter().map(|(value, _)| value).collect();
         self.nodes_evaluated += 1;
         let value = node
-            .evaluate(&values, inputs)
+            .evaluate(&values, inputs, scale)
             .with_context(|| format!("Failed to evaluate {id}"))?;
         self.cache.insert(
             key,
@@ -290,6 +304,7 @@ pub fn execute(actions: &[Arc<Action>], dir: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::request::Cancelled;
     use crate::{
         node::{Node, default_graph},
         path_template::escape_path_template,
@@ -495,9 +510,10 @@ mod tests {
                 let id = tc.draw(gs::sampled_from(ids.clone()));
                 randomize_parameters(&tc, &mut graph.get_mut(&id).unwrap().node, true);
             }
+            let request = Request::at_scale(PreviewScale(tc.draw(gs::integers().max_value(3))));
             for id in &ids {
-                let cached = evaluator.evaluate(&graph, &inputs, id);
-                let fresh = evaluate(&graph, &inputs, id);
+                let cached = evaluator.evaluate(&graph, &inputs, id, &request);
+                let fresh = Evaluator::new(0).evaluate(&graph, &inputs, id, &request);
                 match (cached, fresh) {
                     (Ok(cached), Ok(fresh)) => assert!(same(&cached, &fresh), "{id}"),
                     (Err(_), Err(_)) => {}
@@ -516,11 +532,17 @@ mod tests {
         let succeeded: Vec<&NodeId> = graph
             .nodes()
             .map(|(id, _)| id)
-            .filter(|id| evaluator.evaluate(&graph, &inputs, id).is_ok())
+            .filter(|id| {
+                evaluator
+                    .evaluate(&graph, &inputs, id, &Request::default())
+                    .is_ok()
+            })
             .collect();
         let before = evaluator.nodes_evaluated;
         for id in succeeded {
-            evaluator.evaluate(&graph, &inputs, id).unwrap();
+            evaluator
+                .evaluate(&graph, &inputs, id, &Request::default())
+                .unwrap();
         }
         assert_eq!(evaluator.nodes_evaluated, before);
     }
@@ -533,7 +555,11 @@ mod tests {
         let ids: Vec<NodeId> = graph.nodes().map(|(id, _)| id.clone()).collect();
         let target = tc.draw(gs::sampled_from(ids.clone()));
         let mut evaluator = Evaluator::new(usize::MAX);
-        tc.assume(evaluator.evaluate(&graph, &inputs, &target).is_ok());
+        tc.assume(
+            evaluator
+                .evaluate(&graph, &inputs, &target, &Request::default())
+                .is_ok(),
+        );
 
         let changed = tc.draw(gs::sampled_from(ids));
         let affected: BTreeSet<NodeId> = downstream(&graph, &changed)
@@ -542,7 +568,7 @@ mod tests {
             .collect();
         randomize_parameters(&tc, &mut graph.get_mut(&changed).unwrap().node, false);
         let before = evaluator.nodes_evaluated;
-        let _ = evaluator.evaluate(&graph, &inputs, &target);
+        let _ = evaluator.evaluate(&graph, &inputs, &target, &Request::default());
         let evaluated = evaluator.nodes_evaluated - before;
         assert!(evaluated <= affected.len(), "{evaluated} > {affected:?}");
     }
@@ -555,7 +581,7 @@ mod tests {
         let budget = tc.draw(gs::integers::<usize>().max_value(10_000));
         let mut evaluator = Evaluator::new(budget);
         for (id, _) in graph.nodes() {
-            let _ = evaluator.evaluate(&graph, &inputs, id);
+            let _ = evaluator.evaluate(&graph, &inputs, id, &Request::default());
             assert!(evaluator.cached_size() <= budget);
         }
     }
@@ -585,5 +611,103 @@ mod tests {
         evaluator.evaluate_actions(&graph, &inputs).unwrap();
         // Exposure, View Transform and Write PNG.
         assert_eq!(evaluator.nodes_evaluated, graph.len() + 3);
+    }
+
+    #[hegel::test(test_cases = 650)]
+    fn previews_are_the_size_of_halved_full_size_images(tc: TestCase) {
+        let graph = tc.draw(gen_valid_graph());
+        let mosaic = Arc::new(tc.draw(gen_mosaic()));
+        let inputs = bind_all(&graph, &mosaic);
+        let scale = PreviewScale(tc.draw(gs::integers::<u8>().max_value(4)));
+        let mut evaluator = Evaluator::new(usize::MAX);
+        let size = |value: &Value| match value {
+            Value::Mosaic(mosaic) => (mosaic.width, mosaic.height),
+            Value::SceneReferredImage(image) | Value::DisplayReferredImage(image) => {
+                (image.width, image.height)
+            }
+            Value::Action(action) => {
+                let Action::WritePng { image, .. } = &**action;
+                (image.width, image.height)
+            }
+        };
+        for (id, node) in graph.nodes() {
+            let Ok(full) = evaluator.evaluate(&graph, &inputs, id, &Request::default()) else {
+                continue;
+            };
+            let preview = evaluator.evaluate(&graph, &inputs, id, &Request::at_scale(scale));
+            let (mut width, mut height) = size(&full);
+            if node.node.output_type() != ValueType::Mosaic {
+                for _ in 0..scale.halvings() {
+                    (width, height) = (width.div_ceil(2), height.div_ceil(2));
+                }
+            }
+            assert_eq!(size(&preview.unwrap()), (width, height), "{id}");
+        }
+    }
+
+    #[test]
+    fn previews_share_the_mosaic_with_full_size_images() {
+        let graph = default_graph();
+        let view_transform = graph
+            .nodes()
+            .find(|(_, node)| matches!(node.node, Node::ViewTransform(_)))
+            .map(|(id, _)| id.clone())
+            .unwrap();
+        let mosaic = Arc::new(Mosaic {
+            width: 4,
+            height: 4,
+            cfa: [[crate::raw::Channel::Red, crate::raw::Channel::Green]; 2],
+            values: vec![0.5; 16],
+            as_shot_white_balance: [2.0, 1.0, 1.5],
+            xyz_to_camera: crate::color::REC2020.rgb_to_xyz().inverse().unwrap(),
+            orientation: crate::geometry::Orientation::Normal,
+        });
+        let inputs = Inputs::new().bind(IMAGE_INPUT, Input::Mosaic(mosaic));
+        let mut evaluator = Evaluator::new(usize::MAX);
+        let preview = Request::at_scale(PreviewScale(1));
+        evaluator
+            .evaluate(&graph, &inputs, &view_transform, &preview)
+            .unwrap();
+        // Everything up to the view transform.
+        assert_eq!(evaluator.nodes_evaluated, 7);
+        evaluator
+            .evaluate(&graph, &inputs, &view_transform, &Request::default())
+            .unwrap();
+        // Everything but Read Raw and White Balance, which make mosaics.
+        assert_eq!(evaluator.nodes_evaluated, 7 + 5);
+    }
+
+    #[hegel::test(test_cases = 2_000)]
+    fn a_cancelled_evaluation_computes_nothing(tc: TestCase) {
+        let graph = tc.draw(gen_valid_graph());
+        let mosaic = Arc::new(tc.draw(gen_mosaic()));
+        let inputs = bind_all(&graph, &mosaic);
+        let ids: Vec<NodeId> = graph.nodes().map(|(id, _)| id.clone()).collect();
+        let id = tc.draw(gs::sampled_from(ids));
+        let request = Request::default();
+        request.cancel.cancel();
+        let mut evaluator = Evaluator::new(usize::MAX);
+        let error = evaluator
+            .evaluate(&graph, &inputs, &id, &request)
+            .unwrap_err();
+        assert!(Cancelled::caused(&error), "{error:#}");
+        assert_eq!(evaluator.nodes_evaluated, 0);
+        assert_eq!(evaluator.cached_size(), 0);
+    }
+
+    #[hegel::test(test_cases = 1_500)]
+    fn cancelling_doesnt_stop_reusing_cached_values(tc: TestCase) {
+        let graph = tc.draw(gen_valid_graph());
+        let mosaic = Arc::new(tc.draw(gen_mosaic()));
+        let inputs = bind_all(&graph, &mosaic);
+        let ids: Vec<NodeId> = graph.nodes().map(|(id, _)| id.clone()).collect();
+        let id = tc.draw(gs::sampled_from(ids));
+        let mut evaluator = Evaluator::new(usize::MAX);
+        let first = evaluator.evaluate(&graph, &inputs, &id, &Request::default());
+        tc.assume(first.is_ok());
+        let request = Request::default();
+        request.cancel.cancel();
+        let again = evaluator.evaluate(&graph, &inputs, &id, &request).unwrap();
+        assert!(same(&first.unwrap(), &again));
     }
 }

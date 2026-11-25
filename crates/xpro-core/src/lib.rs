@@ -9,6 +9,7 @@ pub mod image;
 pub mod node;
 pub mod path_template;
 pub mod raw;
+pub mod request;
 pub mod value;
 pub mod view;
 

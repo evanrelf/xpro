@@ -12,6 +12,7 @@ use crate::{
     image::Image,
     path_template::expand_path_template,
     raw::{self, Mosaic},
+    request::PreviewScale,
     value::{Value, ValueType},
     view::{self, ToneCurve},
 };
@@ -112,8 +113,14 @@ macro_rules! node_types {
 
 impl Node {
     /// Computes the node's value from the values of its inputs, given in the order of
-    /// [`Ports::inputs`], and the graph's inputs.
-    pub fn evaluate(&self, values: &[Value], inputs: &Inputs) -> anyhow::Result<Value> {
+    /// [`Ports::inputs`], and the graph's inputs. Images come out at `scale`, given that images
+    /// coming in are at it too.
+    pub fn evaluate(
+        &self,
+        values: &[Value],
+        inputs: &Inputs,
+        scale: PreviewScale,
+    ) -> anyhow::Result<Value> {
         let expected = self.inputs().len();
         ensure!(
             values.len() == expected,
@@ -126,7 +133,9 @@ impl Node {
         Ok(match self {
             Self::ReadRaw(node) => Value::Mosaic(node.evaluate(inputs)?),
             Self::WhiteBalance(node) => Value::Mosaic(Arc::new(node.evaluate(mosaic()?))),
-            Self::Demosaic(node) => Value::SceneReferredImage(Arc::new(node.evaluate(mosaic()?))),
+            Self::Demosaic(node) => {
+                Value::SceneReferredImage(Arc::new(node.evaluate(mosaic()?, scale)))
+            }
             Self::CameraToWorkingSpace(node) => {
                 Value::SceneReferredImage(Arc::new(node.evaluate(scene()?)?))
             }
@@ -251,9 +260,16 @@ pub struct Demosaic {
 }
 
 impl Demosaic {
+    /// Demosaics at full size. For a preview, develops a half-size image straight from the
+    /// mosaic, then halves it as many more times as needed.
     #[must_use]
-    pub fn evaluate(&self, mosaic: &Mosaic) -> Image {
-        develop::demosaic(mosaic)
+    pub fn evaluate(&self, mosaic: &Mosaic, scale: PreviewScale) -> Image {
+        match scale.halvings() {
+            0 => develop::demosaic(mosaic),
+            halvings => (1..halvings).fold(develop::demosaic_half(mosaic), |image, _| {
+                geometry::halve(&image)
+            }),
+        }
     }
 }
 
