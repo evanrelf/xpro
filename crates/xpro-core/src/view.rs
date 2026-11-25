@@ -7,7 +7,7 @@ use crate::{
 use rayon::prelude::*;
 
 /// The scene-linear value of middle gray, an 18% reflectance surface. Tone curves keep it
-/// where it is, so a well-exposed photo keeps its overall brightness.
+/// where it is, so a well-exposed image keeps its overall brightness.
 pub const MIDDLE_GRAY: f32 = 0.18;
 
 /// A tone curve, from scene-linear light (unbounded) to display-linear light (0 to 1).

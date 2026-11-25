@@ -1,42 +1,42 @@
-//! Where the photo sits in the viewer: fitting, zooming and panning.
+//! Where the image sits in the viewer: fitting, zooming and panning.
 
 use egui::{Pos2, Rect, Vec2};
 
-/// The most the photo can be magnified, in screen pixels per photo pixel.
+/// The most the image can be magnified, in screen pixels per image pixel.
 const MAX_MAGNIFICATION: f32 = 16.0;
 
-/// How the photo is placed in the viewer.
+/// How the image is placed in the viewer.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Viewport {
     /// As large as fits, centered. Keeps fitting as the viewer changes size.
     #[default]
     Fit,
-    /// Shown at `scale` points per photo pixel, with `center` (a point on the photo, in photo
+    /// Shown at `scale` points per image pixel, with `center` (a point on the image, in image
     /// pixels) at the middle of the viewer.
     Zoomed { scale: f32, center: Pos2 },
 }
 
-/// The space the photo is shown in.
+/// The space the image is shown in.
 #[derive(Clone, Copy, Debug)]
 pub struct Viewer {
     /// Where the viewer is, in points.
     pub rect: Rect,
     /// Screen pixels per point.
     pub pixels_per_point: f32,
-    /// The photo's size, in pixels.
-    pub photo: Vec2,
+    /// The image's size, in pixels.
+    pub image: Vec2,
 }
 
 impl Viewer {
-    /// The scale at which the photo is as large as fits, in points per photo pixel. Zero if the
+    /// The scale at which the image is as large as fits, in points per image pixel. Zero if the
     /// viewer has no room.
     pub fn fit_scale(&self) -> f32 {
-        (self.rect.width() / self.photo.x)
-            .min(self.rect.height() / self.photo.y)
+        (self.rect.width() / self.image.x)
+            .min(self.rect.height() / self.image.y)
             .max(0.0)
     }
 
-    /// The scale at which one photo pixel covers one screen pixel ("100%").
+    /// The scale at which one image pixel covers one screen pixel ("100%").
     pub fn actual_scale(&self) -> f32 {
         1.0 / self.pixels_per_point
     }
@@ -48,49 +48,49 @@ impl Viewer {
     /// A viewport's scale and center, with `Fit` worked out for this viewer.
     fn resolve(&self, viewport: Viewport) -> (f32, Pos2) {
         match viewport {
-            Viewport::Fit => (self.fit_scale(), (self.photo / 2.0).to_pos2()),
+            Viewport::Fit => (self.fit_scale(), (self.image / 2.0).to_pos2()),
             Viewport::Zoomed { scale, center } => (scale, center),
         }
     }
 
-    /// Where the photo is drawn, in points.
-    pub fn photo_rect(&self, viewport: Viewport) -> Rect {
+    /// Where the image is drawn, in points.
+    pub fn image_rect(&self, viewport: Viewport) -> Rect {
         let (scale, center) = self.resolve(viewport);
         Rect::from_min_size(
             self.rect.center() - center.to_vec2() * scale,
-            self.photo * scale,
+            self.image * scale,
         )
     }
 
-    /// The point on the photo, in photo pixels, that's shown at `position` in the viewer.
-    pub fn photo_point(&self, viewport: Viewport, position: Pos2) -> Pos2 {
+    /// The point on the image, in image pixels, that's shown at `position` in the viewer.
+    pub fn image_point(&self, viewport: Viewport, position: Pos2) -> Pos2 {
         let (scale, center) = self.resolve(viewport);
         center + (position - self.rect.center()) / scale
     }
 
-    /// Zooms in by `factor` (or out, if it's less than 1), keeping the point on the photo under
-    /// `anchor` where it is, as far as the photo's bounds allow.
+    /// Zooms in by `factor` (or out, if it's less than 1), keeping the point on the image under
+    /// `anchor` where it is, as far as the image's bounds allow.
     pub fn zoom(&self, viewport: Viewport, factor: f32, anchor: Pos2) -> Viewport {
         let (scale, _) = self.resolve(viewport);
         self.zoom_to(viewport, scale * factor, anchor)
     }
 
-    /// Zooms to `scale`, keeping the point on the photo under `anchor` where it is, as far as
-    /// the photo's bounds allow.
+    /// Zooms to `scale`, keeping the point on the image under `anchor` where it is, as far as
+    /// the image's bounds allow.
     pub fn zoom_to(&self, viewport: Viewport, scale: f32, anchor: Pos2) -> Viewport {
         // Limit magnification before working out the center, so pinching past the limit
-        // doesn't slide the photo around.
+        // doesn't slide the image around.
         let scale = scale.min(self.max_scale());
         self.clamp(self.zoom_to_unclamped(viewport, scale, anchor))
     }
 
     fn zoom_to_unclamped(&self, viewport: Viewport, scale: f32, anchor: Pos2) -> Viewport {
-        let point = self.photo_point(viewport, anchor);
+        let point = self.image_point(viewport, anchor);
         let center = point - (anchor - self.rect.center()) / scale;
         Viewport::Zoomed { scale, center }
     }
 
-    /// Moves the photo by `delta` points, as far as its bounds allow.
+    /// Moves the image by `delta` points, as far as its bounds allow.
     pub fn pan(&self, viewport: Viewport, delta: Vec2) -> Viewport {
         self.clamp(self.pan_unclamped(viewport, delta))
     }
@@ -103,25 +103,25 @@ impl Viewer {
         }
     }
 
-    /// Keeps a viewport in bounds. The photo is never smaller than fitting, or magnified past
-    /// [`MAX_MAGNIFICATION`]. Along each axis, a photo bigger than the viewer covers it, with no
+    /// Keeps a viewport in bounds. The image is never smaller than fitting, or magnified past
+    /// [`MAX_MAGNIFICATION`]. Along each axis, an image bigger than the viewer covers it, with no
     /// empty space at the edges, and a smaller one is centered.
     pub fn clamp(&self, viewport: Viewport) -> Viewport {
         let Viewport::Zoomed { scale, center } = viewport else {
             return Viewport::Fit;
         };
-        // With no room to show the photo, there's nothing to zoom.
+        // With no room to show the image, there's nothing to zoom.
         if self.fit_scale() <= 0.0 {
             return Viewport::Fit;
         }
         let scale = scale.min(self.max_scale());
-        // Zooming out to roughly the fitting size snaps to fitting, so the photo keeps fitting
+        // Zooming out to roughly the fitting size snaps to fitting, so the image keeps fitting
         // when the viewer is resized. This comes after limiting magnification, which can bring
-        // the scale down to fitting when the photo is tiny.
+        // the scale down to fitting when the image is tiny.
         if scale <= self.fit_scale() * 1.0001 {
             return Viewport::Fit;
         }
-        // Half the viewer's size, in photo pixels.
+        // Half the viewer's size, in image pixels.
         let half_view = self.rect.size() / (2.0 * scale);
         let clamp_axis = |center: f32, half_view: f32, length: f32| {
             if 2.0 * half_view >= length {
@@ -133,8 +133,8 @@ impl Viewer {
         Viewport::Zoomed {
             scale,
             center: Pos2::new(
-                clamp_axis(center.x, half_view.x, self.photo.x),
-                clamp_axis(center.y, half_view.y, self.photo.y),
+                clamp_axis(center.x, half_view.x, self.image.x),
+                clamp_axis(center.y, half_view.y, self.image.y),
             ),
         }
     }
@@ -155,7 +155,7 @@ mod tests {
         Viewer {
             rect: Rect::from_min_size(min, size),
             pixels_per_point: tc.draw(gs::sampled_from(vec![1.0, 1.5, 2.0, 3.0])),
-            photo: Vec2::new(tc.draw(length(2e4)), tc.draw(length(2e4))),
+            image: Vec2::new(tc.draw(length(2e4)), tc.draw(length(2e4))),
         }
     }
 
@@ -166,8 +166,8 @@ mod tests {
             return Viewport::Fit;
         }
         let scale = tc.draw(gs::floats::<f32>().min_value(1e-3).max_value(20.0));
-        let x = tc.draw(gs::floats::<f32>().min_value(-viewer.photo.x).max_value(2.0 * viewer.photo.x));
-        let y = tc.draw(gs::floats::<f32>().min_value(-viewer.photo.y).max_value(2.0 * viewer.photo.y));
+        let x = tc.draw(gs::floats::<f32>().min_value(-viewer.image.x).max_value(2.0 * viewer.image.x));
+        let y = tc.draw(gs::floats::<f32>().min_value(-viewer.image.y).max_value(2.0 * viewer.image.y));
         Viewport::Zoomed {
             scale,
             center: pos2(x, y),
@@ -223,7 +223,7 @@ mod tests {
     #[hegel::test(test_cases = 10_000)]
     fn fit_stays_inside_the_viewer(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
-        let rect = viewer.photo_rect(Viewport::Fit);
+        let rect = viewer.image_rect(Viewport::Fit);
         let error = position_error(&[viewer.rect]);
         assert!(viewer.rect.expand(error).contains_rect(rect), "{rect:?} in {viewer:?}");
     }
@@ -231,17 +231,17 @@ mod tests {
     #[hegel::test(test_cases = 10_000)]
     fn fit_keeps_the_aspect_ratio(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
-        let rect = viewer.photo_rect(Viewport::Fit);
+        let rect = viewer.image_rect(Viewport::Fit);
         // Compare cross products rather than ratios, to avoid dividing by tiny heights.
-        let error = position_error(&[viewer.rect]) * (viewer.photo.x + viewer.photo.y);
-        let (lhs, rhs) = (rect.width() * viewer.photo.y, rect.height() * viewer.photo.x);
+        let error = position_error(&[viewer.rect]) * (viewer.image.x + viewer.image.y);
+        let (lhs, rhs) = (rect.width() * viewer.image.y, rect.height() * viewer.image.x);
         assert!(close(lhs, rhs, error), "{rect:?} vs {viewer:?}");
     }
 
     #[hegel::test(test_cases = 10_000)]
     fn fit_is_centered(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
-        let rect = viewer.photo_rect(Viewport::Fit);
+        let rect = viewer.image_rect(Viewport::Fit);
         let error = position_error(&[viewer.rect]);
         assert!(close_pos(rect.center(), viewer.rect.center(), error));
     }
@@ -250,7 +250,7 @@ mod tests {
     fn fit_fills_one_dimension(tc: TestCase) {
         // Otherwise it could be bigger.
         let viewer = tc.draw(gen_viewer());
-        let rect = viewer.photo_rect(Viewport::Fit);
+        let rect = viewer.image_rect(Viewport::Fit);
         let error = position_error(&[viewer.rect]);
         assert!(
             close(rect.width(), viewer.rect.width(), error)
@@ -262,21 +262,21 @@ mod tests {
     #[hegel::test(test_cases = 10_000)]
     fn fit_is_never_inverted(tc: TestCase) {
         // A cramped layout can leave a negative amount of space. Then there's no room for the
-        // photo, and it mustn't be drawn mirrored instead.
+        // image, and it mustn't be drawn mirrored instead.
         let side = || gs::floats::<f32>().min_value(-1e4).max_value(1e4);
         let mut viewer = tc.draw(gen_viewer());
         viewer.rect = Rect::from_min_size(
             viewer.rect.min,
             Vec2::new(tc.draw(side()), tc.draw(side())),
         );
-        let rect = viewer.photo_rect(Viewport::Fit);
+        let rect = viewer.image_rect(Viewport::Fit);
         assert!(rect.width() >= 0.0 && rect.height() >= 0.0, "{rect:?}");
     }
 
     // Bounds
 
     #[hegel::test(test_cases = 10_000)]
-    fn clamp_keeps_the_photo_in_bounds(tc: TestCase) {
+    fn clamp_keeps_the_image_in_bounds(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
         let viewport = viewer.clamp(tc.draw(gen_viewport(viewer)));
         let Viewport::Zoomed { scale, .. } = viewport else {
@@ -285,17 +285,17 @@ mod tests {
         assert!(scale > viewer.fit_scale(), "smaller than fitting");
         assert!(scale * viewer.pixels_per_point <= MAX_MAGNIFICATION * 1.0001, "too big");
 
-        let rect = viewer.photo_rect(viewport);
+        let rect = viewer.image_rect(viewport);
         let view = viewer.rect;
         let error = position_error(&[view, rect]);
-        for (photo_min, photo_max, view_min, view_max) in [
+        for (image_min, image_max, view_min, view_max) in [
             (rect.min.x, rect.max.x, view.min.x, view.max.x),
             (rect.min.y, rect.max.y, view.min.y, view.max.y),
         ] {
-            if photo_max - photo_min > view_max - view_min {
-                assert!(photo_min <= view_min + error && photo_max >= view_max - error);
+            if image_max - image_min > view_max - view_min {
+                assert!(image_min <= view_min + error && image_max >= view_max - error);
             } else {
-                assert!(close(photo_min + photo_max, view_min + view_max, 2.0 * error));
+                assert!(close(image_min + image_max, view_min + view_max, 2.0 * error));
             }
         }
     }
@@ -317,11 +317,11 @@ mod tests {
     }
 
     #[hegel::test(test_cases = 10_000)]
-    fn zooming_past_the_limit_leaves_the_photo_still(tc: TestCase) {
-        // Pinching further at maximum magnification mustn't slide the photo around.
+    fn zooming_past_the_limit_leaves_the_image_still(tc: TestCase) {
+        // Pinching further at maximum magnification mustn't slide the image around.
         let viewer = tc.draw(gen_viewer());
-        let x = tc.draw(gs::floats::<f32>().min_value(0.0).max_value(viewer.photo.x));
-        let y = tc.draw(gs::floats::<f32>().min_value(0.0).max_value(viewer.photo.y));
+        let x = tc.draw(gs::floats::<f32>().min_value(0.0).max_value(viewer.image.x));
+        let y = tc.draw(gs::floats::<f32>().min_value(0.0).max_value(viewer.image.y));
         let at_max = viewer.clamp(Viewport::Zoomed {
             scale: viewer.max_scale(),
             center: pos2(x, y),
@@ -360,20 +360,20 @@ mod tests {
         let scale = tc.draw(gs::floats::<f32>().min_value(1e-3).max_value(20.0));
         let zoomed = viewer.zoom_to_unclamped(viewport, scale, anchor);
 
-        let before = viewer.photo_point(viewport, anchor);
-        let after = viewer.photo_point(zoomed, anchor);
+        let before = viewer.image_point(viewport, anchor);
+        let after = viewer.image_point(zoomed, anchor);
         let error = position_error(&[viewer.rect]) / scale.min(viewer.resolve(viewport).0);
         assert!(close_pos(before, after, error), "{before:?} != {after:?}");
     }
 
     #[hegel::test(test_cases = 10_000)]
-    fn panning_moves_the_photo_by_the_delta(tc: TestCase) {
+    fn panning_moves_the_image_by_the_delta(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
         let viewport = tc.draw(gen_viewport(viewer));
         let coordinate = || gs::floats::<f32>().min_value(-1e3).max_value(1e3);
         let delta = Vec2::new(tc.draw(coordinate()), tc.draw(coordinate()));
-        let before = viewer.photo_rect(viewport);
-        let after = viewer.photo_rect(viewer.pan_unclamped(viewport, delta));
+        let before = viewer.image_rect(viewport);
+        let after = viewer.image_rect(viewer.pan_unclamped(viewport, delta));
         let error = position_error(&[viewer.rect, before, after]);
         assert!(close_pos(after.min, before.min + delta, error), "{before:?} → {after:?}");
         assert!(close(after.width(), before.width(), error));
@@ -382,17 +382,17 @@ mod tests {
     // 100%
 
     #[hegel::test(test_cases = 10_000)]
-    fn actual_size_shows_one_photo_pixel_per_screen_pixel(tc: TestCase) {
+    fn actual_size_shows_one_image_pixel_per_screen_pixel(tc: TestCase) {
         let viewer = tc.draw(gen_viewer());
         let viewport = viewer.clamp(tc.draw(gen_viewport(viewer)));
         let anchor = tc.draw(gen_position(viewer));
         let actual = viewer.zoom_to(viewport, viewer.actual_scale(), anchor);
         // Unless 100% would be smaller than fitting, in which case it fits.
         if viewer.actual_scale() > viewer.fit_scale() * 1.0001 {
-            let rect = viewer.photo_rect(actual);
+            let rect = viewer.image_rect(actual);
             let screen_pixels = rect.width() * viewer.pixels_per_point;
             let error = position_error(&[viewer.rect, rect]) * viewer.pixels_per_point;
-            assert!(close(screen_pixels, viewer.photo.x, error), "{screen_pixels}");
+            assert!(close(screen_pixels, viewer.image.x, error), "{screen_pixels}");
         } else {
             assert_eq!(actual, Viewport::Fit);
         }

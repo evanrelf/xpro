@@ -13,11 +13,11 @@ use std::{
 use viewport::{Viewer, Viewport};
 use xpro_core::image::DisplayImage;
 
-pub fn run(photo: Option<PathBuf>) -> anyhow::Result<()> {
+pub fn run(path: Option<PathBuf>) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             // On macOS, eframe also uses the initial title as the name in the
-            // menu bar, so the window is renamed after the photo below.
+            // menu bar, so the window is renamed after the raw file below.
             .with_title("Xpro")
             .with_min_inner_size([480.0, 320.0])
             .with_maximized(true),
@@ -27,12 +27,12 @@ pub fn run(photo: Option<PathBuf>) -> anyhow::Result<()> {
         "Xpro",
         options,
         Box::new(|cc| {
-            if let Some(path) = &photo {
+            if let Some(path) = &path {
                 cc.egui_ctx
                     .send_viewport_cmd(egui::ViewportCommand::Title(file_name(path)));
             }
             Ok(Box::new(App {
-                photo: photo.map_or(Photo::None, Photo::Pending),
+                image: path.map_or(ImageState::None, ImageState::Pending),
             }))
         }),
     )
@@ -40,10 +40,11 @@ pub fn run(photo: Option<PathBuf>) -> anyhow::Result<()> {
 }
 
 struct App {
-    photo: Photo,
+    image: ImageState,
 }
 
-enum Photo {
+/// The state of the image the app shows, from nothing yet to loaded or failed.
+enum ImageState {
     None,
     /// Waiting for the first frame, when the GPU's texture size limit is known.
     Pending(PathBuf),
@@ -52,40 +53,40 @@ enum Photo {
     Failed(anyhow::Error),
 }
 
-/// A developed photo at several sizes, so it can be drawn sharply at any zoom.
+/// A developed image at several sizes, so it can be drawn sharply at any zoom.
 struct Developed {
-    /// The photo at full size, then halved again and again down to about screen size. Levels
+    /// The image at full size, then halved again and again down to about screen size. Levels
     /// too big for the GPU are left out.
     levels: Vec<DisplayImage>,
-    /// The size of the full photo, in pixels.
+    /// The size of the full image, in pixels.
     full_size: Vec2,
 }
 
 struct Loaded {
     /// Textures of [`Developed::levels`], largest first.
     levels: Vec<TextureHandle>,
-    /// The size of the full photo, in pixels.
+    /// The size of the full image, in pixels.
     full_size: Vec2,
     viewport: Viewport,
 }
 
 /// Levels stop being halved once they're this small on their longest side, which is about as
-/// small as the window can show the photo.
+/// small as the window can show the image.
 const SMALLEST_LEVEL: usize = 512;
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.update_photo(ui.ctx());
+        self.update_image(ui.ctx());
 
-        egui::CentralPanel::default().show(ui, |ui| match &mut self.photo {
-            Photo::None => {
-                ui.centered_and_justified(|ui| ui.label("Open a raw photo with `xpro PHOTO`"));
+        egui::CentralPanel::default().show(ui, |ui| match &mut self.image {
+            ImageState::None => {
+                ui.centered_and_justified(|ui| ui.label("Open a raw file with `xpro RAW_FILE`"));
             }
-            Photo::Pending(_) | Photo::Loading(_) => {
+            ImageState::Pending(_) | ImageState::Loading(_) => {
                 ui.centered_and_justified(egui::Ui::spinner);
             }
-            Photo::Loaded(loaded) => show_photo(ui, loaded),
-            Photo::Failed(error) => {
+            ImageState::Loaded(loaded) => show_image(ui, loaded),
+            ImageState::Failed(error) => {
                 ui.centered_and_justified(|ui| ui.label(format!("{error:#}")));
             }
         });
@@ -93,9 +94,9 @@ impl eframe::App for App {
 }
 
 impl App {
-    fn update_photo(&mut self, ctx: &egui::Context) {
-        match &self.photo {
-            Photo::Pending(path) => {
+    fn update_image(&mut self, ctx: &egui::Context) {
+        match &self.image {
+            ImageState::Pending(path) => {
                 let max_texture_side = ctx.input(|input| input.max_texture_side);
                 let (sender, receiver) = mpsc::channel();
                 let path = path.clone();
@@ -105,9 +106,9 @@ impl App {
                     let _ = sender.send(develop_levels(&path, max_texture_side));
                     ctx.request_repaint();
                 });
-                self.photo = Photo::Loading(receiver);
+                self.image = ImageState::Loading(receiver);
             }
-            Photo::Loading(receiver) => match receiver.try_recv() {
+            ImageState::Loading(receiver) => match receiver.try_recv() {
                 Ok(Ok(Developed { levels, full_size })) => {
                     let start = Instant::now();
                     let levels = levels
@@ -118,28 +119,28 @@ impl App {
                                 [image.width, image.height],
                                 image.pixels.as_flattened(),
                             );
-                            ctx.load_texture(format!("photo {i}"), image, TextureOptions::LINEAR)
+                            ctx.load_texture(format!("image {i}"), image, TextureOptions::LINEAR)
                         })
                         .collect();
                     tracing::info!(elapsed = ?start.elapsed(), "Uploaded textures");
-                    self.photo = Photo::Loaded(Loaded {
+                    self.image = ImageState::Loaded(Loaded {
                         levels,
                         full_size,
                         viewport: Viewport::Fit,
                     });
                 }
-                Ok(Err(error)) => self.photo = Photo::Failed(error),
+                Ok(Err(error)) => self.image = ImageState::Failed(error),
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    self.photo = Photo::Failed(anyhow!("Developing the photo crashed"));
+                    self.image = ImageState::Failed(anyhow!("Developing the raw file crashed"));
                 }
             },
-            Photo::None | Photo::Loaded(_) | Photo::Failed(_) => {}
+            ImageState::None | ImageState::Loaded(_) | ImageState::Failed(_) => {}
         }
     }
 }
 
-/// Develops a photo, and tone maps it at full size and at each halving down to
+/// Develops a raw file, and tone maps it at full size and at each halving down to
 /// [`SMALLEST_LEVEL`]. Halving happens before tone mapping, so it averages light rather than
 /// display values.
 fn develop_levels(path: &Path, max_texture_side: usize) -> anyhow::Result<Developed> {
@@ -170,15 +171,15 @@ fn develop_levels(path: &Path, max_texture_side: usize) -> anyhow::Result<Develo
     Ok(Developed { levels, full_size })
 }
 
-/// Shows the photo. Pinching zooms, swiping with two fingers pans, and double-clicking switches
+/// Shows the image. Pinching zooms, swiping with two fingers pans, and double-clicking switches
 /// between fitting and 100%.
-fn show_photo(ui: &mut egui::Ui, loaded: &mut Loaded) {
+fn show_image(ui: &mut egui::Ui, loaded: &mut Loaded) {
     let rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(rect, Sense::click());
     let viewer = Viewer {
         rect,
         pixels_per_point: ui.pixels_per_point(),
-        photo: loaded.full_size,
+        image: loaded.full_size,
     };
     // Re-apply the bounds every frame, since the window may have been resized.
     let mut viewport = viewer.clamp(loaded.viewport);
@@ -209,19 +210,19 @@ fn show_photo(ui: &mut egui::Ui, loaded: &mut Loaded) {
     }
     loaded.viewport = viewport;
 
-    // Line the photo up with the screen's pixels, so that at 100% each photo pixel lands on
+    // Line the image up with the screen's pixels, so that at 100% each image pixel lands on
     // exactly one screen pixel instead of blurring across two.
     let ppp = viewer.pixels_per_point;
-    let photo_rect = viewer.photo_rect(viewport);
-    let photo_rect = Rect::from_min_size(
-        ((photo_rect.min.to_vec2() * ppp).round() / ppp).to_pos2(),
-        photo_rect.size(),
+    let image_rect = viewer.image_rect(viewport);
+    let image_rect = Rect::from_min_size(
+        ((image_rect.min.to_vec2() * ppp).round() / ppp).to_pos2(),
+        image_rect.size(),
     );
     let widths: Vec<usize> = loaded.levels.iter().map(|level| level.size()[0]).collect();
-    let level = &loaded.levels[sharpest_needed(&widths, photo_rect.width() * ppp)];
+    let level = &loaded.levels[sharpest_needed(&widths, image_rect.width() * ppp)];
     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
     ui.painter_at(rect)
-        .image(level.id(), photo_rect, uv, Color32::WHITE);
+        .image(level.id(), image_rect, uv, Color32::WHITE);
 }
 
 /// Picks which level to draw: the smallest that's at least `shown_width` pixels wide, so it's
@@ -249,7 +250,7 @@ mod tests {
     use super::*;
     use hegel::{TestCase, generators as gs};
 
-    /// Widths of a full-size photo and its successive halvings.
+    /// Widths of a full-size image and its successive halvings.
     #[hegel::composite]
     fn gen_widths(tc: &TestCase) -> Vec<usize> {
         let mut width = tc.draw(gs::integers::<usize>().min_value(1).max_value(20_000));

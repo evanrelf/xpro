@@ -8,6 +8,11 @@ is likely to creep in. To see the terms used together, read the
 
 ## Files
 
+A file is something on disk, referred to by its path. Once read into memory it
+becomes a mosaic, an image, a graph or an edit, never a "file". So in code, a
+variable holding a path is named as a path, and in-memory data is named for what
+it is. Command-line help can still ask for a file, by convention.
+
 **Image file**
 : A file holding a picture, such as a raw file, JPEG or PNG. Xpro never
 modifies an image file it edits. Avoid "photo" as a term, though it's fine in

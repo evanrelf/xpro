@@ -35,7 +35,7 @@ impl Mosaic {
     }
 }
 
-/// A decoded raw photo.
+/// A decoded raw file.
 #[derive(Clone, Debug)]
 pub struct RawPhoto {
     /// Sensor data cropped to the recommended image area. 0.0 is black and 1.0 is the sensor's

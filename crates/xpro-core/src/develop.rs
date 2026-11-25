@@ -9,13 +9,13 @@ use crate::{
 use anyhow::Context as _;
 use rayon::prelude::*;
 
-/// How much brighter to make a developed photo, in stops, so that a subject the camera metered
+/// How much brighter to make a developed image, in stops, so that a subject the camera metered
 /// as correctly exposed lands near [`MIDDLE_GRAY`](crate::view::MIDDLE_GRAY).
 ///
 /// Cameras expose with headroom for highlights, so raw values for a correctly exposed subject
 /// sit well below the sensor's white level. How much headroom varies by camera and settings.
 /// This value matches the overall brightness of the camera's own JPEGs for a set of Nikon Z f
-/// photos, which were shot with Active D-Lighting (which underexposes to protect highlights).
+/// raw files, which were shot with Active D-Lighting (which underexposes to protect highlights).
 /// Other cameras may want less.
 ///
 /// The sensor's white level ends up 4 stops above middle gray, where
@@ -23,7 +23,7 @@ use rayon::prelude::*;
 /// off all the way to the sensor's limit and no further.
 pub const BASELINE_EXPOSURE: f32 = 1.5;
 
-/// Develops a raw photo with its as-shot white balance into upright, linear Rec.2020, with
+/// Develops a decoded raw file with its as-shot white balance into upright, linear Rec.2020, with
 /// [`BASELINE_EXPOSURE`] applied.
 pub fn develop(raw: &RawPhoto) -> anyhow::Result<Image> {
     let mosaic = white_balance(&raw.mosaic, raw.as_shot_white_balance);
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn the_standard_curve_turns_the_sensors_white_level_white() {
-        // A raw photo's white level is 1.0 before the baseline exposure brightens it. If the
+        // A raw file's white level is 1.0 before the baseline exposure brightens it. If the
         // curve reached white sooner, it would clip highlights the sensor captured. If later,
         // the brightest highlights would look gray.
         let white_level = BASELINE_EXPOSURE.exp2();
