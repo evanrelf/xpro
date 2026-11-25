@@ -121,10 +121,14 @@ with the user's review, rather than in advance.
   a downstream parameter reuses everything upstream of it.
 - Test this by counting evaluations, not by timing.
 
-### 6. Requests
+### 6. Requests (done, except regions)
 
 - Requests carry a region, a preview scale and cancellation through the
   evaluator, and nodes declare their locality.
+- Regions and locality are deferred to milestone 3, where tiled zooming first
+  needs them. They need a design for learning each node's output size and
+  geometry before computing pixels, and for images that cover only part of the
+  frame. Cancellation is checked between nodes, not yet within them.
 - Add a preview-scale path for reading raw files. For example, develop a
   half-size image straight from the mosaic by turning each 2×2 block of
   photosites into one pixel. This is also where faster loading in the app
