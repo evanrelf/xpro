@@ -115,7 +115,7 @@ with the user's review, rather than in advance.
 - `xpro new-edit` writes the default graph out as an edit file, so edits can be
   made by hand before the GUI exists.
 
-### 5. Caching
+### 5. Caching (done)
 
 - A node's cache key combines its parameters with its inputs' keys, so changing
   a downstream parameter reuses everything upstream of it.

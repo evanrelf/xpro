@@ -421,52 +421,9 @@ mod tests {
     use super::*;
     use crate::{
         node::Node,
-        testing::{gen_any_graph, gen_valid_graph},
+        testing::{downstream, gen_any_graph, gen_valid_graph, upstream},
     };
     use hegel::{TestCase, generators as gs};
-
-    /// Every node whose value depends on `id`'s, including `id` itself.
-    fn downstream(graph: &Graph, id: &NodeId) -> BTreeSet<NodeId> {
-        let mut found = BTreeSet::from([id.clone()]);
-        loop {
-            let before = found.len();
-            for (other, node) in graph.nodes() {
-                if node
-                    .node
-                    .inputs()
-                    .iter()
-                    .any(|input| input.wire.as_ref().is_some_and(|wire| found.contains(wire)))
-                {
-                    found.insert(other.clone());
-                }
-            }
-            if found.len() == before {
-                return found;
-            }
-        }
-    }
-
-    /// Every node whose value `id`'s depends on, including `id` itself.
-    fn upstream(graph: &Graph, id: &NodeId) -> BTreeSet<NodeId> {
-        let mut found = BTreeSet::from([id.clone()]);
-        let mut queue = vec![id.clone()];
-        while let Some(next) = queue.pop() {
-            let Some(node) = graph.get(&next) else {
-                continue;
-            };
-            for wire in node
-                .node
-                .inputs()
-                .into_iter()
-                .filter_map(|input| input.wire)
-            {
-                if found.insert(wire.clone()) {
-                    queue.push(wire);
-                }
-            }
-        }
-        found
-    }
 
     /// A node with at least one input, and the index of one of its inputs.
     fn draw_input(tc: &TestCase, graph: &Graph) -> (NodeId, usize) {

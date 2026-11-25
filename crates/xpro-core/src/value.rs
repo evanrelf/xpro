@@ -61,6 +61,19 @@ impl Value {
         }
     }
 
+    /// Roughly how many bytes of memory the value holds.
+    #[must_use]
+    pub fn size(&self) -> usize {
+        match self {
+            Self::Mosaic(mosaic) => size_of_val(mosaic.values.as_slice()),
+            Self::SceneReferredImage(image) | Self::DisplayReferredImage(image) => {
+                size_of_val(image.pixels.as_slice())
+            }
+            // An action shares its image with the value it was made from.
+            Self::Action(_) => 0,
+        }
+    }
+
     fn mismatch(&self, expected: ValueType) -> anyhow::Error {
         anyhow::anyhow!("Expected a {expected}, not a {}", self.value_type())
     }

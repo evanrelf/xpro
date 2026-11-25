@@ -9,6 +9,7 @@ use crate::{
     value::ValueType,
 };
 use hegel::{TestCase, generators as gs};
+use std::collections::BTreeSet;
 
 pub fn gen_float(allow_nan: bool) -> impl hegel::generators::PrintableGenerator<f32> {
     gs::floats::<f32>().allow_nan(allow_nan)
@@ -130,4 +131,47 @@ pub fn gen_mosaic(tc: &TestCase) -> Mosaic {
         xyz_to_camera: REC2020.rgb_to_xyz().inverse().unwrap(),
         orientation: Orientation::from_exif(orientation),
     }
+}
+
+/// Every node whose value depends on `id`'s, including `id` itself.
+pub fn downstream(graph: &Graph, id: &NodeId) -> BTreeSet<NodeId> {
+    let mut found = BTreeSet::from([id.clone()]);
+    loop {
+        let before = found.len();
+        for (other, node) in graph.nodes() {
+            if node
+                .node
+                .inputs()
+                .iter()
+                .any(|input| input.wire.as_ref().is_some_and(|wire| found.contains(wire)))
+            {
+                found.insert(other.clone());
+            }
+        }
+        if found.len() == before {
+            return found;
+        }
+    }
+}
+
+/// Every node whose value `id`'s depends on, including `id` itself.
+pub fn upstream(graph: &Graph, id: &NodeId) -> BTreeSet<NodeId> {
+    let mut found = BTreeSet::from([id.clone()]);
+    let mut queue = vec![id.clone()];
+    while let Some(next) = queue.pop() {
+        let Some(node) = graph.get(&next) else {
+            continue;
+        };
+        for wire in node
+            .node
+            .inputs()
+            .into_iter()
+            .filter_map(|input| input.wire)
+        {
+            if found.insert(wire.clone()) {
+                queue.push(wire);
+            }
+        }
+    }
+    found
 }
