@@ -267,7 +267,7 @@ fn zoomed(harness: &Harness<'_, ViewerState>) -> (f32, Pos2) {
     }
 }
 
-fn pinch(harness: &mut Harness<'_, ViewerState>, at: Pos2, factor: f32) {
+fn pinch<State>(harness: &mut Harness<'_, State>, at: Pos2, factor: f32) {
     harness.hover_at(at);
     harness.event(Event::Zoom(factor));
     harness.run();
@@ -479,6 +479,25 @@ fn an_invalid_parameter_shows_the_error() {
     settle(&mut harness);
     set_slider(&mut harness, "Contrast", 0.1);
     harness.get_by_label_contains("can't reach white");
+}
+
+#[test]
+fn an_error_in_between_keeps_the_zoom() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut harness = app(Some(Ok(document(&dir))));
+    settle(&mut harness);
+    // In the middle of the viewer.
+    pinch(&mut harness, Pos2::new(500.0, 300.0), 2.0);
+    settle(&mut harness);
+    let zoomed = |harness: &Harness<'_, App>| match &harness.state().shown {
+        Shown::Image(loaded) => matches!(loaded.viewport, Viewport::Zoomed { .. }),
+        _ => false,
+    };
+    assert!(zoomed(&harness));
+    set_slider(&mut harness, "Contrast", 0.1);
+    harness.get_by_label_contains("can't reach white");
+    set_slider(&mut harness, "Contrast", 2.0);
+    assert!(zoomed(&harness));
 }
 
 #[test]

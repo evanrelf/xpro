@@ -12,7 +12,7 @@ use std::{
     thread,
 };
 use viewport::{Viewer, Viewport};
-use worker::{Job, Level, Update, Worker};
+use worker::{Job, Level, OnDrop, Update, Worker};
 use xpro_core::{
     edit::Edit,
     eval::{Inputs, render},
@@ -110,6 +110,9 @@ pub struct App {
     exporting: Option<mpsc::Receiver<anyhow::Result<Vec<PathBuf>>>>,
     /// The window title last set.
     title: String,
+    /// The size and viewport of the image last shown, to keep the zoom and position if the
+    /// next image is about the same size, even after an error in between.
+    last_shown: Option<(Vec2, Viewport)>,
 }
 
 /// What the viewer shows.
@@ -148,6 +151,7 @@ impl App {
             status: None,
             exporting: None,
             title: String::new(),
+            last_shown: None,
         }
     }
 
@@ -287,8 +291,9 @@ impl App {
             .to_owned();
         let ctx = ctx.clone();
         thread::spawn(move || {
+            // Even if rendering panics, so the app notices that it stopped.
+            let _guard = OnDrop(|| ctx.request_repaint());
             let _ = sender.send(render(&graph, &inputs, &dir));
-            ctx.request_repaint();
         });
         self.exporting = Some(receiver);
         self.status = Some("Exporting…".to_owned());
@@ -381,6 +386,9 @@ impl App {
                     self.show_level(ctx, generation, level);
                 }
                 Update::Failed { generation, error } if generation >= shown_generation => {
+                    if let Shown::Image(old) = &self.shown {
+                        self.last_shown = Some((old.full_size, old.viewport));
+                    }
                     self.shown = Shown::Failed(format!("{error:#}"));
                 }
                 Update::Done { generation } => self.finished = self.finished.max(generation),
@@ -402,15 +410,18 @@ impl App {
                 loaded.levels.retain(|(h, _)| *h != halvings);
                 let position = loaded.levels.partition_point(|(h, _)| *h < halvings);
                 loaded.levels.insert(position, (halvings, texture));
-                if halvings == 0 {
-                    loaded.full_size = full_size;
-                }
+                // Full-size results come after previews, and know the size exactly, even when
+                // the full-size level itself is too big for the GPU.
+                loaded.full_size = full_size;
             }
             shown => {
+                if let Shown::Image(old) = shown {
+                    self.last_shown = Some((old.full_size, old.viewport));
+                }
                 // Keep the zoom and position if the image is about the same size.
-                let viewport = match shown {
-                    Shown::Image(old) if (old.full_size - full_size).abs().max_elem() <= 8.0 => {
-                        old.viewport
+                let viewport = match self.last_shown {
+                    Some((size, viewport)) if (size - full_size).abs().max_elem() <= 8.0 => {
+                        viewport
                     }
                     _ => Viewport::Fit,
                 };

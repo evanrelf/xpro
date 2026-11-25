@@ -59,6 +59,15 @@ pub struct Level {
     pub full_size: [usize; 2],
 }
 
+/// Calls a function when dropped, even while unwinding from a panic.
+pub struct OnDrop<F: Fn()>(pub F);
+
+impl<F: Fn()> Drop for OnDrop<F> {
+    fn drop(&mut self) {
+        (self.0)();
+    }
+}
+
 /// A background thread that evaluates jobs, newest first.
 pub struct Worker {
     pub(super) jobs: Option<mpsc::Sender<(Job, Cancel)>>,
@@ -74,6 +83,8 @@ impl Worker {
         let (jobs, job_receiver) = mpsc::channel::<(Job, Cancel)>();
         let (update_sender, updates) = mpsc::channel();
         let thread = thread::spawn(move || {
+            // Even if this thread panics, so the app notices that it stopped.
+            let _guard = OnDrop(&notify);
             let mut evaluator = Evaluator::new(CACHE_BUDGET);
             while let Ok(mut job) = job_receiver.recv() {
                 // Skip to the newest job. Older ones are already cancelled.
@@ -141,14 +152,14 @@ fn work(
         };
         let preview = view(evaluator, job, first, cancel)?;
         let full_size = estimate_full_size(&preview, first);
-        if !send_levels(job, preview, first.halvings(), u8::MAX, full_size, send) {
+        if !send_levels(job, preview, first.halvings(), u8::MAX, full_size, send)? {
             return Ok(false);
         }
         if first != PreviewScale::FULL {
             let full = view(evaluator, job, PreviewScale::FULL, cancel)?;
             let full_size = [full.width, full.height];
             // Smaller levels came from the preview already.
-            if !send_levels(job, full, 0, first.halvings(), full_size, send) {
+            if !send_levels(job, full, 0, first.halvings(), full_size, send)? {
                 return Ok(false);
             }
         }
@@ -195,28 +206,20 @@ fn send_levels(
     until: u8,
     full_size: [usize; 2],
     send: &impl Fn(Update) -> bool,
-) -> bool {
+) -> anyhow::Result<bool> {
     while halvings < until {
         let longest = image.width.max(image.height);
         if longest <= job.max_texture_side {
-            let level = match encode_srgb8(&image) {
-                Ok(encoded) => Level {
-                    image: encoded,
-                    halvings,
-                    full_size,
-                },
-                Err(error) => {
-                    return send(Update::Failed {
-                        generation: job.generation,
-                        error,
-                    });
-                }
+            let level = Level {
+                image: encode_srgb8(&image)?,
+                halvings,
+                full_size,
             };
             if !send(Update::Level {
                 generation: job.generation,
                 level,
             }) {
-                return false;
+                return Ok(false);
             }
         }
         if longest <= SMALLEST_LEVEL {
@@ -225,5 +228,5 @@ fn send_levels(
         image = Arc::new(halve(&image));
         halvings += 1;
     }
-    true
+    Ok(true)
 }
