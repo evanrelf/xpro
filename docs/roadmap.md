@@ -31,7 +31,8 @@ The working plan is in [milestone-2.md](milestone-2.md).
 
 A visual node editor with type-checked wiring, thumbnails on nodes, and a
 viewer that follows the selection. Evaluation runs in the background with fast
-previews, and undo, redo and autosave make experimenting safe.
+previews, computing only the region that's visible, and undo, redo and autosave
+make experimenting safe.
 
 **Done when** adjusting a parameter feels like turning a knob.
 
