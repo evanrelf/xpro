@@ -1,29 +1,33 @@
 //! The interactive app.
 
+mod inspector;
 mod viewport;
+mod worker;
 
-use anyhow::{Context as _, anyhow};
-use egui::{Color32, Rect, Sense, TextureHandle, TextureOptions, Vec2, pos2};
+use anyhow::anyhow;
+use egui::{Color32, Rect, RichText, Sense, TextureHandle, TextureOptions, Vec2, pos2};
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, mpsc},
+    sync::mpsc,
     thread,
-    time::Instant,
 };
 use viewport::{Viewer, Viewport};
+use worker::{Job, Level, Update, Worker};
 use xpro_core::{
-    eval::{Input, Inputs, evaluate},
+    edit::Edit,
+    eval::{Inputs, render},
+    graph::{Graph, NodeId},
     image::Srgb8Image,
-    node::{Node, Ports as _, default_graph},
+    node::{Ports as _, default_graph},
 };
 
 pub fn run(path: Option<PathBuf>) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             // On macOS, eframe also uses the initial title as the name in the
-            // menu bar, so the window is renamed after the raw file below.
+            // menu bar, so the window is renamed after the image file below.
             .with_title("Xpro")
-            .with_min_inner_size([480.0, 320.0])
+            .with_min_inner_size([640.0, 400.0])
             .with_maximized(true),
         ..Default::default()
     };
@@ -31,159 +35,427 @@ pub fn run(path: Option<PathBuf>) -> anyhow::Result<()> {
         "Xpro",
         options,
         Box::new(|cc| {
-            if let Some(path) = &path {
-                cc.egui_ctx
-                    .send_viewport_cmd(egui::ViewportCommand::Title(file_name(path)));
-            }
-            Ok(Box::new(App {
-                image: path.map_or(ImageState::None, ImageState::Pending),
-            }))
+            let document = path.as_deref().map(Document::open);
+            Ok(Box::new(App::new(&cc.egui_ctx, document)))
         }),
     )
     .map_err(|error| anyhow!("{error}"))
 }
 
-struct App {
-    image: ImageState,
+/// An image file being edited.
+pub struct Document {
+    pub image_path: PathBuf,
+    pub edit: Edit,
+    /// The edit as it was when opened or last saved, to tell whether it's been changed since.
+    baseline: Edit,
+    /// What the graph's inputs are bound to.
+    pub inputs: Inputs,
+    /// The node the viewer shows and the inspector edits.
+    pub selected: Option<NodeId>,
 }
 
-/// The state of the image the app shows, from nothing yet to loaded or failed.
-enum ImageState {
-    None,
-    /// Waiting for the first frame, when the GPU's texture size limit is known.
-    Pending(PathBuf),
-    Loading(mpsc::Receiver<anyhow::Result<Developed>>),
-    Loaded(Loaded),
-    Failed(anyhow::Error),
+impl Document {
+    /// Opens an image file with its edit file, or with the default graph if it has none.
+    pub fn open(image_path: &Path) -> anyhow::Result<Self> {
+        let edit = Edit::read_for(image_path)?.unwrap_or_else(|| Edit::new(default_graph()));
+        let inputs = edit.inputs(image_path);
+        Ok(Self::new(image_path.to_owned(), edit, inputs))
+    }
+
+    /// A document for an edit whose graph's inputs are bound to `inputs`. Selects the node an
+    /// output node is wired to, or else the last node.
+    pub fn new(image_path: PathBuf, edit: Edit, inputs: Inputs) -> Self {
+        let graph = &edit.graph;
+        let selected = graph
+            .nodes()
+            .filter(|(_, node)| node.node.is_output())
+            .find_map(|(_, node)| node.node.inputs().into_iter().find_map(|input| input.wire))
+            .or_else(|| graph.topological_order().pop());
+        Self {
+            image_path,
+            baseline: edit.clone(),
+            edit,
+            inputs,
+            selected,
+        }
+    }
+
+    /// Whether the edit has changed since it was opened or last saved.
+    pub fn is_edited(&self) -> bool {
+        self.edit != self.baseline
+    }
+
+    /// Saves the edit to its edit file, next to the image file.
+    pub fn save(&mut self) -> anyhow::Result<PathBuf> {
+        let path = Edit::path_for(&self.image_path);
+        self.edit.save(&path)?;
+        self.baseline = self.edit.clone();
+        Ok(path)
+    }
 }
 
-/// A developed image at several sizes, so it can be drawn sharply at any zoom.
-struct Developed {
-    /// The image at full size, then halved again and again down to about screen size. Levels
-    /// too big for the GPU are left out.
-    levels: Vec<Srgb8Image>,
-    /// The size of the full image, in pixels.
-    full_size: Vec2,
+pub struct App {
+    document: Option<anyhow::Result<Document>>,
+    shown: Shown,
+    worker: Option<Worker>,
+    /// What the newest job given to the worker was for, to know when the graph, the selection
+    /// or the GPU's texture size limit changes.
+    submitted: Option<(Graph, NodeId, usize)>,
+    /// The newest job's generation.
+    generation: u64,
+    /// The newest generation the worker has finished.
+    finished: u64,
+    /// A message about the last thing done, such as saving.
+    status: Option<String>,
+    exporting: Option<mpsc::Receiver<anyhow::Result<Vec<PathBuf>>>>,
+    /// The window title last set.
+    title: String,
 }
 
+/// What the viewer shows.
+enum Shown {
+    Nothing,
+    Waiting,
+    Image(Loaded),
+    Failed(String),
+}
+
+/// An image at several sizes, so it can be drawn sharply at any zoom.
 struct Loaded {
-    /// Textures of [`Developed::levels`], largest first.
-    levels: Vec<TextureHandle>,
+    /// Textures of the image, each with how many times it was halved from full size, largest
+    /// first.
+    levels: Vec<(u8, TextureHandle)>,
     /// The size of the full image, in pixels.
     full_size: Vec2,
     viewport: Viewport,
+    /// The job the levels came from.
+    generation: u64,
 }
 
-/// Levels stop being halved once they're this small on their longest side, which is about as
-/// small as the window can show the image.
-const SMALLEST_LEVEL: usize = 512;
+impl App {
+    fn new(ctx: &egui::Context, document: Option<anyhow::Result<Document>>) -> Self {
+        let worker = document.is_some().then(|| {
+            let ctx = ctx.clone();
+            Worker::spawn(move || ctx.request_repaint())
+        });
+        Self {
+            document,
+            shown: Shown::Nothing,
+            worker,
+            submitted: None,
+            generation: 0,
+            finished: 0,
+            status: None,
+            exporting: None,
+            title: String::new(),
+        }
+    }
+
+    /// Whether the worker has finished everything it was given.
+    #[cfg(test)]
+    fn is_idle(&self) -> bool {
+        self.finished == self.generation && self.exporting.is_none()
+    }
+}
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.update_image(ui.ctx());
+        let ctx = ui.ctx().clone();
+        self.receive_updates(&ctx);
+        self.receive_export();
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
+            self.save();
+        }
+        self.update_title(&ctx);
 
-        egui::CentralPanel::default().show(ui, |ui| match &mut self.image {
-            ImageState::None => {
-                ui.centered_and_justified(|ui| ui.label("Open a raw file with `xpro RAW_FILE`"));
+        let clicked;
+        match &mut self.document {
+            None => {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.centered_and_justified(|ui| {
+                        ui.label("Open an image file with `xpro IMAGE_FILE`")
+                    });
+                });
+                return;
             }
-            ImageState::Pending(_) | ImageState::Loading(_) => {
+            Some(Err(error)) => {
+                let error = format!("{error:#}");
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.centered_and_justified(|ui| ui.label(error));
+                });
+                return;
+            }
+            Some(Ok(document)) => {
+                let status = self.status.as_deref();
+                let exporting = self.exporting.is_some();
+                clicked = egui::Panel::top("toolbar")
+                    .show(ui, |ui| toolbar(ui, document, status, exporting))
+                    .inner;
+                egui::Panel::left("nodes")
+                    .resizable(false)
+                    .exact_size(180.0)
+                    .show(ui, |ui| {
+                        ui.add_space(6.0);
+                        inspector::node_list(ui, &document.edit.graph, &mut document.selected);
+                    });
+                egui::Panel::right("inspector")
+                    .resizable(false)
+                    .exact_size(280.0)
+                    .show(ui, |ui| {
+                        ui.add_space(6.0);
+                        if let Some(id) = document.selected.clone() {
+                            inspector::inspector(ui, &mut document.edit.graph, &id);
+                        }
+                    });
+            }
+        }
+        if clicked.save {
+            self.save();
+        }
+        if clicked.export {
+            self.export(&ctx);
+        }
+        // Changes made this frame are evaluated right away.
+        self.submit_job(&ctx);
+        if self.status.as_deref() == Some("Saved") && self.save_needed() {
+            self.status = None;
+        }
+
+        egui::CentralPanel::default().show(ui, |ui| match &mut self.shown {
+            Shown::Nothing => {}
+            Shown::Waiting => {
                 ui.centered_and_justified(egui::Ui::spinner);
             }
-            ImageState::Loaded(loaded) => show_image(ui, loaded),
-            ImageState::Failed(error) => {
-                ui.centered_and_justified(|ui| ui.label(format!("{error:#}")));
+            Shown::Image(loaded) => show_image(ui, loaded),
+            Shown::Failed(error) => {
+                ui.centered_and_justified(|ui| ui.label(error.as_str()));
             }
         });
     }
 }
 
-impl App {
-    fn update_image(&mut self, ctx: &egui::Context) {
-        match &self.image {
-            ImageState::Pending(path) => {
-                let max_texture_side = ctx.input(|input| input.max_texture_side);
-                let (sender, receiver) = mpsc::channel();
-                let path = path.clone();
-                let ctx = ctx.clone();
-                thread::spawn(move || {
-                    // If the app has quit, nobody needs the result.
-                    let _ = sender.send(develop_levels(&path, max_texture_side));
-                    ctx.request_repaint();
-                });
-                self.image = ImageState::Loading(receiver);
-            }
-            ImageState::Loading(receiver) => match receiver.try_recv() {
-                Ok(Ok(Developed { levels, full_size })) => {
-                    let start = Instant::now();
-                    let levels = levels
-                        .iter()
-                        .enumerate()
-                        .map(|(i, image)| {
-                            let image = egui::ColorImage::from_rgb(
-                                [image.width, image.height],
-                                image.pixels.as_flattened(),
-                            );
-                            ctx.load_texture(format!("image {i}"), image, TextureOptions::LINEAR)
-                        })
-                        .collect();
-                    tracing::info!(elapsed = ?start.elapsed(), "Uploaded textures");
-                    self.image = ImageState::Loaded(Loaded {
-                        levels,
-                        full_size,
-                        viewport: Viewport::Fit,
-                    });
-                }
-                Ok(Err(error)) => self.image = ImageState::Failed(error),
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.image = ImageState::Failed(anyhow!("Developing the raw file crashed"));
-                }
-            },
-            ImageState::None | ImageState::Loaded(_) | ImageState::Failed(_) => {}
+/// What was clicked in the toolbar.
+#[derive(Default)]
+struct Clicked {
+    save: bool,
+    export: bool,
+}
+
+/// The bar above everything: the image file's name, and buttons to save and export.
+fn toolbar(
+    ui: &mut egui::Ui,
+    document: &Document,
+    status: Option<&str>,
+    exporting: bool,
+) -> Clicked {
+    let mut clicked = Clicked::default();
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(file_name(&document.image_path)).strong());
+        if document.is_edited() {
+            ui.label(RichText::new("Edited").weak());
         }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            clicked.export = ui
+                .add_enabled(!exporting, egui::Button::new("Export"))
+                .on_hover_text("Write the files the graph's output nodes describe")
+                .clicked();
+            clicked.save = ui
+                .button("Save")
+                .on_hover_text("Save the edit file (⌘S)")
+                .clicked();
+            if let Some(status) = status {
+                ui.label(RichText::new(status).weak());
+            }
+        });
+    });
+    clicked
+}
+
+impl App {
+    /// Writes the files the graph's output nodes describe, in the background.
+    fn export(&mut self, ctx: &egui::Context) {
+        let Some(Ok(document)) = &self.document else {
+            return;
+        };
+        let (sender, receiver) = mpsc::channel();
+        let graph = document.edit.graph.clone();
+        let inputs = document.inputs.clone();
+        let dir = document
+            .image_path
+            .parent()
+            .unwrap_or(Path::new(""))
+            .to_owned();
+        let ctx = ctx.clone();
+        thread::spawn(move || {
+            let _ = sender.send(render(&graph, &inputs, &dir));
+            ctx.request_repaint();
+        });
+        self.exporting = Some(receiver);
+        self.status = Some("Exporting…".to_owned());
+    }
+
+    fn save(&mut self) {
+        if let Some(Ok(document)) = &mut self.document {
+            self.status = Some(match document.save() {
+                Ok(_) => "Saved".to_owned(),
+                Err(error) => format!("{error:#}"),
+            });
+        }
+    }
+
+    /// Whether the open edit has unsaved changes.
+    fn save_needed(&self) -> bool {
+        matches!(&self.document, Some(Ok(document)) if document.is_edited())
+    }
+
+    /// Names the window after the image file, noting unsaved changes.
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let title = match &self.document {
+            Some(Ok(document)) if document.is_edited() => {
+                format!("{} — Edited", file_name(&document.image_path))
+            }
+            Some(Ok(document)) => file_name(&document.image_path),
+            _ => "Xpro".to_owned(),
+        };
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
+    }
+
+    /// Gives the worker a new job if the graph or the selected node changed.
+    fn submit_job(&mut self, ctx: &egui::Context) {
+        let (Some(Ok(document)), Some(worker)) = (&self.document, &mut self.worker) else {
+            return;
+        };
+        let Some(selected) = &document.selected else {
+            return;
+        };
+        let max_texture_side = ctx.input(|input| input.max_texture_side);
+        let current = (
+            document.edit.graph.clone(),
+            selected.clone(),
+            max_texture_side,
+        );
+        if self.submitted.as_ref() == Some(&current) {
+            return;
+        }
+        self.generation += 1;
+        worker.submit(Job {
+            generation: self.generation,
+            graph: current.0.clone(),
+            inputs: document.inputs.clone(),
+            node: current.1.clone(),
+            max_texture_side,
+        });
+        self.submitted = Some(current);
+        if matches!(self.shown, Shown::Nothing | Shown::Failed(_)) {
+            self.shown = Shown::Waiting;
+        }
+    }
+
+    /// Shows what the worker has finished.
+    fn receive_updates(&mut self, ctx: &egui::Context) {
+        loop {
+            let Some(worker) = &self.worker else {
+                return;
+            };
+            let update = match worker.updates.try_recv() {
+                Ok(update) => update,
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.shown = Shown::Failed("Evaluating crashed".to_owned());
+                    self.finished = self.generation;
+                    self.worker = None;
+                    return;
+                }
+            };
+            let shown_generation = match &self.shown {
+                Shown::Image(loaded) => loaded.generation,
+                _ => 0,
+            };
+            match update {
+                // Anything newer than what's shown is better, even if it's not the newest job,
+                // so the image keeps up while a slider is dragged.
+                Update::Level { generation, level } if generation >= shown_generation => {
+                    self.show_level(ctx, generation, level);
+                }
+                Update::Failed { generation, error } if generation >= shown_generation => {
+                    self.shown = Shown::Failed(format!("{error:#}"));
+                }
+                Update::Done { generation } => self.finished = self.finished.max(generation),
+                Update::Level { .. } | Update::Failed { .. } => {}
+            }
+        }
+    }
+
+    fn show_level(&mut self, ctx: &egui::Context, generation: u64, level: Level) {
+        let Level {
+            image,
+            halvings,
+            full_size,
+        } = level;
+        let texture = upload(ctx, &image, generation, halvings);
+        let full_size = Vec2::new(full_size[0] as f32, full_size[1] as f32);
+        match &mut self.shown {
+            Shown::Image(loaded) if loaded.generation == generation => {
+                loaded.levels.retain(|(h, _)| *h != halvings);
+                let position = loaded.levels.partition_point(|(h, _)| *h < halvings);
+                loaded.levels.insert(position, (halvings, texture));
+                if halvings == 0 {
+                    loaded.full_size = full_size;
+                }
+            }
+            shown => {
+                // Keep the zoom and position if the image is about the same size.
+                let viewport = match shown {
+                    Shown::Image(old) if (old.full_size - full_size).abs().max_elem() <= 8.0 => {
+                        old.viewport
+                    }
+                    _ => Viewport::Fit,
+                };
+                *shown = Shown::Image(Loaded {
+                    levels: vec![(halvings, texture)],
+                    full_size,
+                    viewport,
+                    generation,
+                });
+            }
+        }
+    }
+
+    fn receive_export(&mut self) {
+        let Some(receiver) = &self.exporting else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => Err(anyhow!("Exporting crashed")),
+        };
+        self.status = Some(match result {
+            Ok(paths) => {
+                let names: Vec<String> = paths.iter().map(|path| file_name(path)).collect();
+                if names.is_empty() {
+                    "Nothing to export".to_owned()
+                } else {
+                    format!("Exported {}", names.join(", "))
+                }
+            }
+            Err(error) => format!("{error:#}"),
+        });
+        self.exporting = None;
     }
 }
 
-/// Develops a raw file, and tone maps it at full size and at each halving down to
-/// [`SMALLEST_LEVEL`]. Halving happens before tone mapping, so it averages light rather than
-/// display values.
-fn develop_levels(path: &Path, max_texture_side: usize) -> anyhow::Result<Developed> {
-    // Until the app shows any node, it shows what the view transform is given, halved before the
-    // view transform is applied.
-    let graph = default_graph();
-    let (view_transform, upstream) = graph
-        .nodes()
-        .find_map(|(_, node)| match &node.node {
-            Node::ViewTransform(view_transform) => Some((view_transform, node.node.inputs())),
-            _ => None,
-        })
-        .context("The default graph has no view transform")?;
-    let upstream = upstream[0].wire.clone().context("The view transform isn't wired")?;
-    let inputs = Inputs::new().bind("image", Input::Path(path.to_owned()));
-
-    let start = Instant::now();
-    let mut image = evaluate(&graph, &inputs, &upstream)?
-        .as_scene_referred_image()?
-        .clone();
-    tracing::info!(elapsed = ?start.elapsed(), "Developed");
-    let full_size = Vec2::new(image.width as f32, image.height as f32);
-
-    let start = Instant::now();
-    let mut levels = Vec::new();
-    loop {
-        let longest = image.width.max(image.height);
-        if longest <= max_texture_side {
-            let display = view_transform.evaluate(&image)?;
-            levels.push(xpro_core::view::encode_srgb8(&display)?);
-        }
-        if longest <= SMALLEST_LEVEL {
-            break;
-        }
-        image = Arc::new(xpro_core::geometry::halve(&image));
-    }
-    tracing::info!(elapsed = ?start.elapsed(), levels = levels.len(), "Applied view transform");
-
-    Ok(Developed { levels, full_size })
+fn upload(ctx: &egui::Context, image: &Srgb8Image, generation: u64, halvings: u8) -> TextureHandle {
+    let image =
+        egui::ColorImage::from_rgb([image.width, image.height], image.pixels.as_flattened());
+    ctx.load_texture(
+        format!("image {generation} {halvings}"),
+        image,
+        TextureOptions::LINEAR,
+    )
 }
 
 /// Shows the image. Pinching zooms, swiping with two fingers pans, and double-clicking switches
@@ -233,8 +505,12 @@ fn show_image(ui: &mut egui::Ui, loaded: &mut Loaded) {
         ((image_rect.min.to_vec2() * ppp).round() / ppp).to_pos2(),
         image_rect.size(),
     );
-    let widths: Vec<usize> = loaded.levels.iter().map(|level| level.size()[0]).collect();
-    let level = &loaded.levels[sharpest_needed(&widths, image_rect.width() * ppp)];
+    let widths: Vec<usize> = loaded
+        .levels
+        .iter()
+        .map(|(_, level)| level.size()[0])
+        .collect();
+    let (_, level) = &loaded.levels[sharpest_needed(&widths, image_rect.width() * ppp)];
     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
     ui.painter_at(rect)
         .image(level.id(), image_rect, uv, Color32::WHITE);

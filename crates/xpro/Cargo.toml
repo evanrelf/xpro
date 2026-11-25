@@ -16,3 +16,4 @@ xpro-core = { workspace = true }
 egui_kittest = { workspace = true }
 hegeltest = { workspace = true }
 image = { workspace = true }
+tempfile = { workspace = true }

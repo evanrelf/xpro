@@ -11,8 +11,8 @@ use xpro_core::{edit::Edit, node::default_graph, path_template::escape_path_temp
 #[derive(clap::Parser)]
 #[command(args_conflicts_with_subcommands = true)]
 struct Args {
-    /// Raw file to open
-    #[arg(value_name = "RAW_FILE")]
+    /// Image file to edit
+    #[arg(value_name = "IMAGE_FILE")]
     path: Option<PathBuf>,
 
     #[command(subcommand)]
