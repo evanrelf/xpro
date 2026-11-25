@@ -1,11 +1,15 @@
 //! View transforms: from scene-referred to display-referred.
 
 use crate::{
+    action::Action,
     color::{REC2020, SRGB, srgb_encode},
     image::{ColorSpace, Image, Srgb8Image},
+    node::ViewTransform,
+    value::Value,
 };
 use anyhow::ensure;
 use rayon::prelude::*;
+use std::sync::Arc;
 
 /// The scene-linear value of middle gray, an 18% reflectance surface. Tone curves keep it
 /// where it is, so a well-exposed image keeps its overall brightness.
@@ -97,6 +101,35 @@ pub fn view_transform(image: &Image, curve: &ToneCurve) -> Image {
         .map(|pixel| pixel.map(|x| curve.apply(x)))
         .collect();
     Image { pixels, ..*image }
+}
+
+/// Turns any value into a display-referred Rec.2020 image that shows what it holds, for looking
+/// at it in a viewer.
+///
+/// - A mosaic shows each photosite's value as gray.
+/// - A scene-referred image goes through the default [`ViewTransform`](crate::node::ViewTransform),
+///   after converting it to the working space if it's in a camera's own RGB.
+/// - A display-referred image is shown as it is.
+/// - An action that writes an image shows that image.
+pub fn for_viewing(value: &Value) -> anyhow::Result<Arc<Image>> {
+    Ok(match value {
+        Value::Mosaic(mosaic) => Arc::new(Image::rec2020(
+            mosaic.width,
+            mosaic.height,
+            mosaic.values.par_iter().map(|&value| [value; 3]).collect(),
+        )),
+        Value::SceneReferredImage(image) => {
+            let image = match image.color_space {
+                ColorSpace::Camera { .. } => &crate::develop::camera_to_rec2020(image)?,
+                ColorSpace::Rec2020 => &**image,
+            };
+            Arc::new(ViewTransform::default().evaluate(image)?)
+        }
+        Value::DisplayReferredImage(image) => image.clone(),
+        Value::Action(action) => match &**action {
+            Action::WritePng { image, .. } => image.clone(),
+        },
+    })
 }
 
 /// Encodes a display-referred Rec.2020 image as 8-bit sRGB. Colors outside sRGB's gamut, and
@@ -222,5 +255,30 @@ mod tests {
             "{value} → {r}, {g}, {b}"
         );
         assert_eq!(g, encode_8_bit(curve.apply(value)), "{value}");
+    }
+
+    #[hegel::test(test_cases = 600)]
+    fn every_value_can_be_viewed_at_its_own_size(tc: TestCase) {
+        let mosaic = Arc::new(tc.draw(crate::testing::gen_mosaic()));
+        let image = Arc::new(crate::develop::demosaic(&mosaic));
+        let rec2020 = Arc::new(crate::develop::camera_to_rec2020(&image).unwrap());
+        let display = Arc::new(view_transform(&rec2020, &ToneCurve::new(1.5, 4.0).unwrap()));
+        let action = Arc::new(Action::WritePng {
+            image: display.clone(),
+            path: "out.png".into(),
+        });
+        let values = [
+            Value::Mosaic(mosaic.clone()),
+            Value::SceneReferredImage(image),
+            Value::SceneReferredImage(rec2020),
+            Value::DisplayReferredImage(display),
+            Value::Action(action),
+        ];
+        for value in values {
+            let viewed = for_viewing(&value).unwrap();
+            assert_eq!((viewed.width, viewed.height), (mosaic.width, mosaic.height));
+            assert_eq!(viewed.pixels.len(), viewed.width * viewed.height);
+            encode_srgb8(&viewed).unwrap();
+        }
     }
 }

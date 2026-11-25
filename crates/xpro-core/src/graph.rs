@@ -197,6 +197,43 @@ impl Graph {
         self.nodes.iter()
     }
 
+    /// The node IDs, each after every node it's wired to, so in the order values flow. Ties go
+    /// in order of ID. Nodes in cycles, and those downstream of them, come last, in order of ID.
+    #[must_use]
+    pub fn topological_order(&self) -> Vec<NodeId> {
+        let upstream = |id: &NodeId| -> BTreeSet<&NodeId> {
+            self.nodes[id]
+                .node
+                .inputs()
+                .into_iter()
+                .filter_map(|input| input.wire)
+                .filter_map(|wire| self.nodes.get_key_value(&wire).map(|(id, _)| id))
+                .collect()
+        };
+        let mut waiting: BTreeMap<&NodeId, BTreeSet<&NodeId>> =
+            self.nodes.keys().map(|id| (id, upstream(id))).collect();
+        let mut order = Vec::with_capacity(self.nodes.len());
+        loop {
+            let ready: Vec<&NodeId> = waiting
+                .iter()
+                .filter(|(_, upstream)| upstream.is_empty())
+                .map(|(id, _)| *id)
+                .collect();
+            if ready.is_empty() {
+                break;
+            }
+            // One at a time, so ties go in order of ID through the whole order, not per round.
+            let next = ready[0];
+            waiting.remove(next);
+            for upstream in waiting.values_mut() {
+                upstream.remove(next);
+            }
+            order.push(next.clone());
+        }
+        order.extend(waiting.into_keys().cloned());
+        order
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.nodes.len()
@@ -754,6 +791,31 @@ mod tests {
             let minimal = format!(r#"(version: 1, nodes: {{ "x": (node: {name}()) }})"#);
             let read = Graph::from_ron(&minimal).unwrap();
             assert_eq!(read.get(&NodeId::new("x")).unwrap().node, node, "{minimal}");
+        }
+    }
+
+    #[hegel::test(test_cases = 1_000)]
+    fn topological_order_puts_each_node_after_its_inputs(tc: TestCase) {
+        let graph = tc.draw(gen_any_graph(false));
+        let order = graph.topological_order();
+        let mut sorted = order.clone();
+        sorted.sort();
+        let ids: Vec<NodeId> = graph.nodes().map(|(id, _)| id.clone()).collect();
+        assert_eq!(sorted, ids, "every node exactly once");
+        let has_cycles = graph
+            .validate()
+            .iter()
+            .any(|error| matches!(error, ValidationError::Cycle { .. }));
+        if !has_cycles {
+            for (i, id) in order.iter().enumerate() {
+                for input in graph.get(id).unwrap().node.inputs() {
+                    if let Some(position) =
+                        input.wire.and_then(|w| order.iter().position(|o| *o == w))
+                    {
+                        assert!(position < i, "{id} comes before its input");
+                    }
+                }
+            }
         }
     }
 }
