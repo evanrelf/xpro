@@ -11,7 +11,7 @@ use std::{
     time::Instant,
 };
 use viewport::{Viewer, Viewport};
-use xpro_core::image::DisplayImage;
+use xpro_core::{image::Srgb8Image, node::ViewTransform};
 
 pub fn run(path: Option<PathBuf>) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
@@ -57,7 +57,7 @@ enum ImageState {
 struct Developed {
     /// The image at full size, then halved again and again down to about screen size. Levels
     /// too big for the GPU are left out.
-    levels: Vec<DisplayImage>,
+    levels: Vec<Srgb8Image>,
     /// The size of the full image, in pixels.
     full_size: Vec2,
 }
@@ -145,21 +145,18 @@ impl App {
 /// display values.
 fn develop_levels(path: &Path, max_texture_side: usize) -> anyhow::Result<Developed> {
     let start = Instant::now();
-    let raw = xpro_core::raw::decode(path)?;
-    tracing::info!(elapsed = ?start.elapsed(), "Decoded");
-
-    let start = Instant::now();
-    let mut image = xpro_core::develop::develop(&raw)?;
+    let mut image = xpro_core::node::develop(path)?;
     tracing::info!(elapsed = ?start.elapsed(), "Developed");
     let full_size = Vec2::new(image.width as f32, image.height as f32);
 
     let start = Instant::now();
-    let curve = xpro_core::view::ToneCurve::standard();
+    let view_transform = ViewTransform::default();
     let mut levels = Vec::new();
     loop {
         let longest = image.width.max(image.height);
         if longest <= max_texture_side {
-            levels.push(xpro_core::view::tone_map_to_srgb(&image, &curve));
+            let display = view_transform.evaluate(&image)?;
+            levels.push(xpro_core::view::encode_srgb8(&display)?);
         }
         if longest <= SMALLEST_LEVEL {
             break;

@@ -2,36 +2,11 @@
 
 use crate::{
     color::{Mat3, REC2020},
-    geometry::orient,
-    image::Image,
-    raw::{Mosaic, RawPhoto},
+    image::{ColorSpace, Image},
+    raw::Mosaic,
 };
-use anyhow::Context as _;
+use anyhow::{Context as _, bail};
 use rayon::prelude::*;
-
-/// How much brighter to make a developed image, in stops, so that a subject the camera metered
-/// as correctly exposed lands near [`MIDDLE_GRAY`](crate::view::MIDDLE_GRAY).
-///
-/// Cameras expose with headroom for highlights, so raw values for a correctly exposed subject
-/// sit well below the sensor's white level. How much headroom varies by camera and settings.
-/// This value matches the overall brightness of the camera's own JPEGs for a set of Nikon Z f
-/// raw files, which were shot with Active D-Lighting (which underexposes to protect highlights).
-/// Other cameras may want less.
-///
-/// The sensor's white level ends up 4 stops above middle gray, where
-/// [`ToneCurve::standard`](crate::view::ToneCurve::standard) reaches white, so highlights roll
-/// off all the way to the sensor's limit and no further.
-pub const BASELINE_EXPOSURE: f32 = 1.5;
-
-/// Develops a decoded raw file with its as-shot white balance into upright, linear Rec.2020, with
-/// [`BASELINE_EXPOSURE`] applied.
-pub fn develop(raw: &RawPhoto) -> anyhow::Result<Image> {
-    let mosaic = white_balance(&raw.mosaic, raw.as_shot_white_balance);
-    let camera_rgb = demosaic(&mosaic);
-    let rec2020 = camera_to_rec2020(&camera_rgb, &raw.xyz_to_camera)?;
-    let exposed = exposure(&rec2020, BASELINE_EXPOSURE);
-    Ok(orient(&exposed, raw.orientation))
-}
 
 /// Brightens an image by `stops` (or darkens it, if negative). Each stop doubles the light.
 #[must_use]
@@ -62,14 +37,11 @@ pub fn white_balance(mosaic: &Mosaic, multipliers: [f32; 3]) -> Mosaic {
                 *value = (*value * multiplier).min(1.0);
             }
         });
-    Mosaic {
-        values,
-        ..mosaic.clone()
-    }
+    Mosaic { values, ..*mosaic }
 }
 
 /// Bilinear demosaicing: each missing channel is the average of the nearest photosites that
-/// measured it.
+/// measured it. The result is in the camera's own RGB.
 #[must_use]
 pub fn demosaic(mosaic: &Mosaic) -> Image {
     let Mosaic {
@@ -103,11 +75,21 @@ pub fn demosaic(mosaic: &Mosaic) -> Image {
         width,
         height,
         pixels,
+        color_space: ColorSpace::Camera {
+            xyz_to_camera: mosaic.xyz_to_camera,
+        },
+        orientation: mosaic.orientation,
     }
 }
 
 /// Converts white-balanced camera RGB to linear Rec.2020.
-pub fn camera_to_rec2020(image: &Image, xyz_to_camera: &Mat3) -> anyhow::Result<Image> {
+pub fn camera_to_rec2020(image: &Image) -> anyhow::Result<Image> {
+    let ColorSpace::Camera { xyz_to_camera } = image.color_space else {
+        bail!(
+            "Expected an image in a camera's RGB, not {:?}",
+            image.color_space
+        );
+    };
     let rec2020_to_camera = xyz_to_camera.mul(&REC2020.rgb_to_xyz());
     // After white balancing, a neutral surface is (1, 1, 1) in camera RGB. Scale each row so
     // that Rec.2020 white maps to exactly that, so neutrals stay neutral.
@@ -123,7 +105,11 @@ pub fn camera_to_rec2020(image: &Image, xyz_to_camera: &Mat3) -> anyhow::Result<
         .par_iter()
         .map(|&pixel| camera_to_rec2020.apply(pixel))
         .collect();
-    Ok(Image { pixels, ..*image })
+    Ok(Image {
+        pixels,
+        color_space: ColorSpace::Rec2020,
+        ..*image
+    })
 }
 
 #[cfg(test)]
@@ -134,11 +120,11 @@ mod tests {
     #[hegel::composite]
     fn gen_pixel(tc: &TestCase) -> Image {
         let value = || gs::floats::<f32>().min_value(-1e3).max_value(1e3);
-        Image {
-            width: 1,
-            height: 1,
-            pixels: vec![[tc.draw(value()), tc.draw(value()), tc.draw(value())]],
-        }
+        Image::rec2020(
+            1,
+            1,
+            vec![[tc.draw(value()), tc.draw(value()), tc.draw(value())]],
+        )
     }
 
     #[hegel::composite]
@@ -150,16 +136,6 @@ mod tests {
         // Subnormal values, below `MIN_POSITIVE`, have too little precision for a relative
         // comparison.
         (a - b).abs() <= 1e-5 * a.abs().max(b.abs()) + f32::MIN_POSITIVE
-    }
-
-    #[test]
-    fn the_standard_curve_turns_the_sensors_white_level_white() {
-        // A raw file's white level is 1.0 before the baseline exposure brightens it. If the
-        // curve reached white sooner, it would clip highlights the sensor captured. If later,
-        // the brightest highlights would look gray.
-        let white_level = BASELINE_EXPOSURE.exp2();
-        let display = crate::view::ToneCurve::standard().apply(white_level);
-        assert!((display - 1.0).abs() < 0.01, "{display}");
     }
 
     #[hegel::test(test_cases = 10_000)]

@@ -16,7 +16,8 @@ pub enum Channel {
     Blue = 2,
 }
 
-/// The single-channel data from a Bayer sensor, before demosaicing.
+/// The single-channel data from a Bayer sensor, before demosaicing, with the metadata needed to
+/// develop it.
 #[derive(Clone, Debug)]
 pub struct Mosaic {
     pub width: usize,
@@ -24,23 +25,8 @@ pub struct Mosaic {
     /// The color filter array: which channel each photosite measures, repeating every 2×2
     /// photosites. Indexed as `cfa[y % 2][x % 2]`.
     pub cfa: [[Channel; 2]; 2],
-    /// Row-major photosite values.
+    /// Row-major photosite values. 0.0 is black and 1.0 is the sensor's white level.
     pub values: Vec<f32>,
-}
-
-impl Mosaic {
-    #[must_use]
-    pub fn channel_at(&self, x: usize, y: usize) -> Channel {
-        self.cfa[y % 2][x % 2]
-    }
-}
-
-/// A decoded raw file.
-#[derive(Clone, Debug)]
-pub struct RawPhoto {
-    /// Sensor data cropped to the recommended image area. 0.0 is black and 1.0 is the sensor's
-    /// white level.
-    pub mosaic: Mosaic,
     /// White balance multipliers for red, green and blue as chosen by the camera, with green at
     /// 1.0.
     pub as_shot_white_balance: [f32; 3],
@@ -50,8 +36,16 @@ pub struct RawPhoto {
     pub orientation: Orientation,
 }
 
-/// Decodes a raw file from a camera with a Bayer sensor.
-pub fn decode(path: &Path) -> anyhow::Result<RawPhoto> {
+impl Mosaic {
+    #[must_use]
+    pub fn channel_at(&self, x: usize, y: usize) -> Channel {
+        self.cfa[y % 2][x % 2]
+    }
+}
+
+/// Decodes a raw file from a camera with a Bayer sensor. The mosaic is cropped to the camera's
+/// recommended image area.
+pub fn decode(path: &Path) -> anyhow::Result<Mosaic> {
     let context = || format!("Failed to decode raw file {}", path.display());
     let source = RawSource::new(path).with_context(context)?;
     let params = RawDecodeParams::default();
@@ -130,13 +124,11 @@ pub fn decode(path: &Path) -> anyhow::Result<RawPhoto> {
         std::array::from_fn(|j| matrix[i * 3 + j])
     }));
 
-    Ok(RawPhoto {
-        mosaic: Mosaic {
-            width,
-            height,
-            cfa,
-            values,
-        },
+    Ok(Mosaic {
+        width,
+        height,
+        cfa,
+        values,
         as_shot_white_balance,
         xyz_to_camera,
         orientation: Orientation::from_exif(orientation),

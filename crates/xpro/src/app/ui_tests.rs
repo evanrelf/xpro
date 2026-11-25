@@ -19,7 +19,7 @@ fn harness(image: ImageState) -> Harness<'static, App> {
 }
 
 /// An image whose development has already finished with the given result.
-fn developed(result: anyhow::Result<DisplayImage>) -> ImageState {
+fn developed(result: anyhow::Result<Srgb8Image>) -> ImageState {
     let (sender, receiver) = mpsc::channel();
     let developed = result.map(|image| Developed {
         full_size: Vec2::new(image.width as f32, image.height as f32),
@@ -31,7 +31,7 @@ fn developed(result: anyhow::Result<DisplayImage>) -> ImageState {
 
 /// The image followed by successive halvings, like [`develop_levels`] makes. Each halving just
 /// keeps every other pixel, which is all these tests need.
-fn levels(image: DisplayImage) -> Vec<DisplayImage> {
+fn levels(image: Srgb8Image) -> Vec<Srgb8Image> {
     let mut levels = vec![image];
     loop {
         let last = levels.last().unwrap();
@@ -43,7 +43,7 @@ fn levels(image: DisplayImage) -> Vec<DisplayImage> {
             .flat_map(|y| (0..width).map(move |x| (x, y)))
             .map(|(x, y)| last.pixels[2 * y * last.width + 2 * x])
             .collect();
-        levels.push(DisplayImage {
+        levels.push(Srgb8Image {
             width,
             height,
             pixels,
@@ -52,11 +52,11 @@ fn levels(image: DisplayImage) -> Vec<DisplayImage> {
 }
 
 /// A `width`×`height` image whose left half is red and right half is blue.
-fn red_and_blue(width: usize, height: usize) -> DisplayImage {
+fn red_and_blue(width: usize, height: usize) -> Srgb8Image {
     let pixels = (0..height)
         .flat_map(|_| (0..width).map(|x| if x < width / 2 { [255, 0, 0] } else { [0, 0, 255] }))
         .collect();
-    DisplayImage {
+    Srgb8Image {
         width,
         height,
         pixels,
@@ -236,7 +236,7 @@ fn at_100_percent_each_image_pixel_is_one_screen_pixel() {
     let pixels = (0..height)
         .flat_map(|y| (0..width).map(move |x| if (x + y) % 2 == 0 { [255; 3] } else { [0; 3] }))
         .collect();
-    let mut harness = harness(developed(Ok(DisplayImage {
+    let mut harness = harness(developed(Ok(Srgb8Image {
         width,
         height,
         pixels,

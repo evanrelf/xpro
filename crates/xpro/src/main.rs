@@ -3,8 +3,10 @@ mod app;
 use clap::Parser as _;
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::Instant,
 };
+use xpro_core::node::{ViewTransform, WritePng};
 
 #[derive(clap::Parser)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -44,19 +46,18 @@ fn main() -> anyhow::Result<()> {
 
 fn render(raw_path: &Path, png_path: &Path) -> anyhow::Result<()> {
     let start = Instant::now();
-    let raw = xpro_core::raw::decode(raw_path)?;
-    tracing::info!(elapsed = ?start.elapsed(), "Decoded");
-
-    let start = Instant::now();
-    let image = xpro_core::develop::develop(&raw)?;
+    let image = xpro_core::node::develop(raw_path)?;
     tracing::info!(elapsed = ?start.elapsed(), "Developed");
 
     let start = Instant::now();
-    let display = xpro_core::view::tone_map_to_srgb(&image, &xpro_core::view::ToneCurve::standard());
+    let display = ViewTransform::default().evaluate(&image)?;
     tracing::info!(elapsed = ?start.elapsed(), "Applied view transform");
 
     let start = Instant::now();
-    xpro_core::export::write_png(&display, png_path)?;
+    let output = WritePng {
+        path: png_path.to_owned(),
+    };
+    output.evaluate(Arc::new(display)).execute()?;
     tracing::info!(elapsed = ?start.elapsed(), "Wrote {}", png_path.display());
 
     Ok(())

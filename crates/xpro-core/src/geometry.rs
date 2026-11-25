@@ -45,7 +45,16 @@ impl Orientation {
     }
 }
 
-/// Transforms an image so it displays upright.
+/// Transforms an image so it displays upright, according to its orientation.
+#[must_use]
+pub fn upright(image: &Image) -> Image {
+    Image {
+        orientation: Orientation::Normal,
+        ..orient(image, image.orientation)
+    }
+}
+
+/// Transforms an image's pixels as `orientation` says, leaving its metadata alone.
 #[must_use]
 pub fn orient(image: &Image, orientation: Orientation) -> Image {
     let (w, h) = (image.width, image.height);
@@ -79,6 +88,7 @@ pub fn orient(image: &Image, orientation: Orientation) -> Image {
         width,
         height,
         pixels,
+        ..*image
     }
 }
 
@@ -113,6 +123,7 @@ pub fn halve(image: &Image) -> Image {
         width,
         height,
         pixels,
+        ..*image
     }
 }
 
@@ -142,11 +153,7 @@ mod tests {
         let channels = width * height * 3;
         let flat = tc.draw(gs::vecs(values).min_size(channels).max_size(channels));
         let pixels = flat.as_chunks::<3>().0.to_vec();
-        Image {
-            width,
-            height,
-            pixels,
-        }
+        Image::rec2020(width, height, pixels)
     }
 
     #[hegel::test(test_cases = 3_000)]
@@ -285,11 +292,7 @@ mod tests {
     /// 3 4 5
     /// ```
     fn numbered() -> Image {
-        Image {
-            width: 3,
-            height: 2,
-            pixels: (0..6_u8).map(|i| [f32::from(i); 3]).collect(),
-        }
+        Image::rec2020(3, 2, (0..6_u8).map(|i| [f32::from(i); 3]).collect())
     }
 
     fn numbers(image: &Image) -> Vec<f32> {

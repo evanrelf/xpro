@@ -2,8 +2,9 @@
 
 use crate::{
     color::{REC2020, SRGB, srgb_encode},
-    image::{DisplayImage, Image},
+    image::{ColorSpace, Image, Srgb8Image},
 };
+use anyhow::ensure;
 use rayon::prelude::*;
 
 /// The scene-linear value of middle gray, an 18% reflectance surface. Tone curves keep it
@@ -70,12 +71,6 @@ impl ToneCurve {
         })
     }
 
-    /// The default curve: moderate contrast, with white 4 stops above middle gray.
-    #[must_use]
-    pub fn standard() -> Self {
-        Self::new(1.5, 4.0).expect("the standard curve's parameters are valid")
-    }
-
     /// Maps a scene-linear value to display-linear. Zero, negative and NaN values become 0.
     /// Values brighter than the white point come out above 1, for the caller to clip.
     #[must_use]
@@ -88,12 +83,30 @@ impl ToneCurve {
     }
 }
 
-/// Converts a linear Rec.2020 image to 8-bit sRGB by applying `curve` to each channel.
+/// Turns a scene-referred image into a display-referred one by applying `curve` to each channel.
+/// The color space stays the same.
 ///
 /// Applying the curve to each channel separately compresses bright, saturated colors toward
-/// white, the way film and camera JPEGs do. Colors outside sRGB's gamut are clipped.
+/// white, the way film and camera JPEGs do. How much depends on the color space's primaries, so
+/// the result looks right only in the working space it was tuned for, Rec.2020.
 #[must_use]
-pub fn tone_map_to_srgb(image: &Image, curve: &ToneCurve) -> DisplayImage {
+pub fn view_transform(image: &Image, curve: &ToneCurve) -> Image {
+    let pixels = image
+        .pixels
+        .par_iter()
+        .map(|pixel| pixel.map(|x| curve.apply(x)))
+        .collect();
+    Image { pixels, ..*image }
+}
+
+/// Encodes a display-referred Rec.2020 image as 8-bit sRGB. Colors outside sRGB's gamut, and
+/// values outside the display's range, are clipped.
+pub fn encode_srgb8(image: &Image) -> anyhow::Result<Srgb8Image> {
+    ensure!(
+        image.color_space == ColorSpace::Rec2020,
+        "Expected a Rec.2020 image, not {:?}",
+        image.color_space,
+    );
     let rec2020_to_srgb = SRGB
         .rgb_to_xyz()
         .inverse()
@@ -102,18 +115,13 @@ pub fn tone_map_to_srgb(image: &Image, curve: &ToneCurve) -> DisplayImage {
     let pixels = image
         .pixels
         .par_iter()
-        .map(|&pixel| {
-            let display = pixel.map(|x| curve.apply(x));
-            rec2020_to_srgb
-                .apply(display)
-                .map(encode_8_bit)
-        })
+        .map(|&pixel| rec2020_to_srgb.apply(pixel).map(encode_8_bit))
         .collect();
-    DisplayImage {
+    Ok(Srgb8Image {
         width: image.width,
         height: image.height,
         pixels,
-    }
+    })
 }
 
 /// Clips a display-linear value to [0, 1], then encodes it as an 8-bit sRGB value.
@@ -166,7 +174,10 @@ mod tests {
         let a = tc.draw(gen_scene_value());
         let b = tc.draw(gen_scene_value());
         let (low, high) = if a <= b { (a, b) } else { (b, a) };
-        assert!(curve.apply(low) <= curve.apply(high), "f({low}) > f({high})");
+        assert!(
+            curve.apply(low) <= curve.apply(high),
+            "f({low}) > f({high})"
+        );
     }
 
     #[hegel::test(test_cases = 10_000)]
@@ -187,7 +198,10 @@ mod tests {
             && (0.0..=64.0).contains(&white)
             && contrast * white > (1.0 / MIDDLE_GRAY).log2() + 1e-3;
         if sensible {
-            assert!(ToneCurve::new(contrast, white).is_some(), "{contrast}, {white}");
+            assert!(
+                ToneCurve::new(contrast, white).is_some(),
+                "{contrast}, {white}"
+            );
         }
         if let Some(curve) = ToneCurve::new(contrast, white) {
             assert!(curve.m.is_finite() && curve.m >= 1.0, "{curve:?}");
@@ -199,14 +213,14 @@ mod tests {
     fn neutral_colors_stay_neutral(tc: TestCase) {
         let curve = tc.draw(gen_curve());
         let value = tc.draw(gen_scene_value());
-        let image = Image {
-            width: 1,
-            height: 1,
-            pixels: vec![[value; 3]],
-        };
-        let [r, g, b] = tone_map_to_srgb(&image, &curve).pixels[0];
+        let image = Image::rec2020(1, 1, vec![[value; 3]]);
+        let display = view_transform(&image, &curve);
+        let [r, g, b] = encode_srgb8(&display).unwrap().pixels[0];
         // Rec.2020 and sRGB share a white point, so neutrals only differ by rounding.
-        assert!(r.abs_diff(g) <= 1 && g.abs_diff(b) <= 1, "{value} → {r}, {g}, {b}");
+        assert!(
+            r.abs_diff(g) <= 1 && g.abs_diff(b) <= 1,
+            "{value} → {r}, {g}, {b}"
+        );
         assert_eq!(g, encode_8_bit(curve.apply(value)), "{value}");
     }
 }
