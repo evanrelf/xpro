@@ -57,9 +57,13 @@ zoom.
   linear Rec.2020. Converting to sRGB and encoding happen on output.
 - **Graph inputs are named.** A Read Raw node names the graph input it reads,
   `image` by default, and evaluating binds each name to an image file.
-- **Output paths are templates,** like `{image}.png`, where `{image}` is the
-  name of the image file bound to the graph input `image`, without its
-  extension. Relative paths resolve against the image file's directory.
+- **Output paths are templates, for now,** like `{image}.png`, where `{image}`
+  is the name of the image file bound to the graph input `image`, without its
+  extension. Relative paths resolve against the image file's directory. Other
+  ways of naming outputs may come later, so templates stay inside the Write PNG
+  node: actions and execution only ever see plain paths.
+- **An edit file is a graph file plus one field,** `input`, naming the graph
+  input bound to the image file it's next to.
 - **Headless first.** The core, file format, evaluator and CLI come before the
   GUI, so the GUI lands on a settled core.
 
@@ -105,11 +109,11 @@ with the user's review, rather than in advance.
   settings". A separate execute step performs them and never overwrites
   existing files.
 
-### 4. Command line
+### 4. Command line (done)
 
 - Edit-aware rendering as described under Decisions.
-- Possibly a command that writes the default graph out as an edit file, so
-  edits can be made by hand before the GUI exists.
+- `xpro new-edit` writes the default graph out as an edit file, so edits can be
+  made by hand before the GUI exists.
 
 ### 5. Caching
 
