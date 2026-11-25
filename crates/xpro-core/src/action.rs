@@ -17,15 +17,24 @@ use std::{
 /// it's executed.
 #[derive(Clone, Debug)]
 pub enum Action {
-    /// Write a display-referred image to a PNG file.
+    /// Write a display-referred image to a PNG file. The path may be relative.
     WritePng { image: Arc<Image>, path: PathBuf },
 }
 
 impl Action {
-    /// Carries out the action. Never overwrites an existing file.
-    pub fn execute(&self) -> anyhow::Result<()> {
+    /// The path of the file the action writes, which may be relative.
+    #[must_use]
+    pub fn target(&self) -> &Path {
         match self {
-            Self::WritePng { image, path } => write_png(&encode_srgb8(image)?, path),
+            Self::WritePng { path, .. } => path,
+        }
+    }
+
+    /// Carries out the action, resolving a relative path against `dir`. Never overwrites an
+    /// existing file.
+    pub fn execute(&self, dir: &Path) -> anyhow::Result<()> {
+        match self {
+            Self::WritePng { image, path } => write_png(&encode_srgb8(image)?, &dir.join(path)),
         }
     }
 }

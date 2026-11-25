@@ -2,16 +2,20 @@
 
 mod viewport;
 
-use anyhow::anyhow;
+use anyhow::{Context as _, anyhow};
 use egui::{Color32, Rect, Sense, TextureHandle, TextureOptions, Vec2, pos2};
 use std::{
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{Arc, mpsc},
     thread,
     time::Instant,
 };
 use viewport::{Viewer, Viewport};
-use xpro_core::{image::Srgb8Image, node::ViewTransform};
+use xpro_core::{
+    eval::{Input, Inputs, evaluate},
+    image::Srgb8Image,
+    node::{Node, Ports as _, default_graph},
+};
 
 pub fn run(path: Option<PathBuf>) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
@@ -144,13 +148,27 @@ impl App {
 /// [`SMALLEST_LEVEL`]. Halving happens before tone mapping, so it averages light rather than
 /// display values.
 fn develop_levels(path: &Path, max_texture_side: usize) -> anyhow::Result<Developed> {
+    // Until the app shows any node, it shows what the view transform is given, halved before the
+    // view transform is applied.
+    let graph = default_graph();
+    let (view_transform, upstream) = graph
+        .nodes()
+        .find_map(|(_, node)| match &node.node {
+            Node::ViewTransform(view_transform) => Some((view_transform, node.node.inputs())),
+            _ => None,
+        })
+        .context("The default graph has no view transform")?;
+    let upstream = upstream[0].wire.clone().context("The view transform isn't wired")?;
+    let inputs = Inputs::new().bind("image", Input::Path(path.to_owned()));
+
     let start = Instant::now();
-    let mut image = xpro_core::node::develop(path)?;
+    let mut image = evaluate(&graph, &inputs, &upstream)?
+        .as_scene_referred_image()?
+        .clone();
     tracing::info!(elapsed = ?start.elapsed(), "Developed");
     let full_size = Vec2::new(image.width as f32, image.height as f32);
 
     let start = Instant::now();
-    let view_transform = ViewTransform::default();
     let mut levels = Vec::new();
     loop {
         let longest = image.width.max(image.height);
@@ -161,7 +179,7 @@ fn develop_levels(path: &Path, max_texture_side: usize) -> anyhow::Result<Develo
         if longest <= SMALLEST_LEVEL {
             break;
         }
-        image = xpro_core::geometry::halve(&image);
+        image = Arc::new(xpro_core::geometry::halve(&image));
     }
     tracing::info!(elapsed = ?start.elapsed(), levels = levels.len(), "Applied view transform");
 

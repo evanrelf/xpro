@@ -36,6 +36,36 @@ impl Value {
     }
 }
 
+impl Value {
+    /// The mosaic, if this is one.
+    pub fn as_mosaic(&self) -> anyhow::Result<&Arc<Mosaic>> {
+        match self {
+            Self::Mosaic(mosaic) => Ok(mosaic),
+            value => Err(value.mismatch(ValueType::Mosaic)),
+        }
+    }
+
+    /// The image, if this is a scene-referred image.
+    pub fn as_scene_referred_image(&self) -> anyhow::Result<&Arc<Image>> {
+        match self {
+            Self::SceneReferredImage(image) => Ok(image),
+            value => Err(value.mismatch(ValueType::SceneReferredImage)),
+        }
+    }
+
+    /// The image, if this is a display-referred image.
+    pub fn as_display_referred_image(&self) -> anyhow::Result<&Arc<Image>> {
+        match self {
+            Self::DisplayReferredImage(image) => Ok(image),
+            value => Err(value.mismatch(ValueType::DisplayReferredImage)),
+        }
+    }
+
+    fn mismatch(&self, expected: ValueType) -> anyhow::Error {
+        anyhow::anyhow!("Expected a {expected}, not a {}", self.value_type())
+    }
+}
+
 impl fmt::Display for ValueType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {

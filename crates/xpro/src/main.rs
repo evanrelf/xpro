@@ -1,12 +1,15 @@
 mod app;
 
 use clap::Parser as _;
+use anyhow::Context as _;
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
     time::Instant,
 };
-use xpro_core::node::{ViewTransform, WritePng};
+use xpro_core::{
+    eval::{Input, Inputs, escape_path_template, evaluate_actions, execute},
+    node::{Node, default_graph},
+};
 
 #[derive(clap::Parser)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -45,21 +48,24 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn render(raw_path: &Path, png_path: &Path) -> anyhow::Result<()> {
-    let start = Instant::now();
-    let image = xpro_core::node::develop(raw_path)?;
-    tracing::info!(elapsed = ?start.elapsed(), "Developed");
+    let mut graph = default_graph();
+    let png_path = png_path
+        .to_str()
+        .context("The PNG file's path must be valid UTF-8")?;
+    for (_, node) in graph.nodes_mut() {
+        if let Node::WritePng(output) = &mut node.node {
+            output.path = escape_path_template(png_path);
+        }
+    }
+    let inputs = Inputs::new().bind("image", Input::Path(raw_path.to_owned()));
 
     let start = Instant::now();
-    let display = ViewTransform::default().evaluate(&image)?;
-    tracing::info!(elapsed = ?start.elapsed(), "Applied view transform");
+    let actions = evaluate_actions(&graph, &inputs)?;
+    tracing::info!(elapsed = ?start.elapsed(), "Evaluated");
 
     let start = Instant::now();
-    let output = WritePng {
-        path: png_path.to_owned(),
-        ..WritePng::default()
-    };
-    output.evaluate(Arc::new(display)).execute()?;
-    tracing::info!(elapsed = ?start.elapsed(), "Wrote {}", png_path.display());
+    execute(&actions, Path::new("."))?;
+    tracing::info!(elapsed = ?start.elapsed(), "Wrote {png_path}");
 
     Ok(())
 }

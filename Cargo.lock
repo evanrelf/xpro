@@ -5167,6 +5167,7 @@ dependencies = [
  "rayon",
  "ron",
  "serde",
+ "tempfile",
 ]
 
 [[package]]

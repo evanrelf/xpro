@@ -5,19 +5,18 @@
 
 use crate::{
     action::Action,
-    develop, geometry,
-    graph::NodeId,
+    develop,
+    eval::{Input, Inputs, expand_path_template},
+    geometry,
+    graph::{Graph, NodeId},
     image::Image,
     raw::{self, Mosaic},
-    value::ValueType,
+    value::{Value, ValueType},
     view::{self, ToneCurve},
 };
-use anyhow::Context as _;
+use anyhow::{Context as _, ensure};
 use serde::{Deserialize, Serialize};
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::sync::Arc;
 
 /// A node's input port.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +64,12 @@ macro_rules! node_types {
                 }
             }
 
+            /// Whether this is an output node, whose value is an action.
+            #[must_use]
+            pub fn is_output(&self) -> bool {
+                self.output_type() == ValueType::Action
+            }
+
             /// The node type's name in snake case, which starts the IDs of nodes of this type.
             #[must_use]
             pub fn id_prefix(&self) -> &'static str {
@@ -102,6 +107,38 @@ macro_rules! node_types {
             }
         )*
     };
+}
+
+impl Node {
+    /// Computes the node's value from the values of its inputs, given in the order of
+    /// [`Ports::inputs`], and the graph's inputs.
+    pub fn evaluate(&self, values: &[Value], inputs: &Inputs) -> anyhow::Result<Value> {
+        let expected = self.inputs().len();
+        ensure!(
+            values.len() == expected,
+            "Expected {expected} input values, not {}",
+            values.len(),
+        );
+        let mosaic = || values[0].as_mosaic();
+        let scene = || values[0].as_scene_referred_image();
+        let display = || values[0].as_display_referred_image();
+        Ok(match self {
+            Self::ReadRaw(node) => Value::Mosaic(node.evaluate(inputs)?),
+            Self::WhiteBalance(node) => Value::Mosaic(Arc::new(node.evaluate(mosaic()?))),
+            Self::Demosaic(node) => Value::SceneReferredImage(Arc::new(node.evaluate(mosaic()?))),
+            Self::CameraToWorkingSpace(node) => {
+                Value::SceneReferredImage(Arc::new(node.evaluate(scene()?)?))
+            }
+            Self::Orient(node) => Value::SceneReferredImage(Arc::new(node.evaluate(scene()?))),
+            Self::Exposure(node) => Value::SceneReferredImage(Arc::new(node.evaluate(scene()?))),
+            Self::ViewTransform(node) => {
+                Value::DisplayReferredImage(Arc::new(node.evaluate(scene()?)?))
+            }
+            Self::WritePng(node) => {
+                Value::Action(Arc::new(node.evaluate(display()?.clone(), inputs)?))
+            }
+        })
+    }
 }
 
 node_types! {
@@ -165,8 +202,11 @@ impl Default for ReadRaw {
 }
 
 impl ReadRaw {
-    pub fn evaluate(&self, path: &Path) -> anyhow::Result<Mosaic> {
-        raw::decode(path)
+    pub fn evaluate(&self, inputs: &Inputs) -> anyhow::Result<Arc<Mosaic>> {
+        match inputs.get(&self.input)? {
+            Input::Path(path) => Ok(Arc::new(raw::decode(path)?)),
+            Input::Mosaic(mosaic) => Ok(mosaic.clone()),
+        }
     }
 }
 
@@ -297,21 +337,32 @@ impl ViewTransform {
 }
 
 /// An output node that writes a display-referred image to a PNG file.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WritePng {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<NodeId>,
-    pub path: PathBuf,
+    /// Where to write the file, as a template like `{image}.png`, where `{image}` stands for the
+    /// name of the image file bound to the graph input called `image`, without its extension.
+    /// See [`expand_path_template`]. Relative paths are resolved when the action is executed.
+    pub path: String,
+}
+
+impl Default for WritePng {
+    fn default() -> Self {
+        Self {
+            image: None,
+            path: "{image}.png".to_owned(),
+        }
+    }
 }
 
 impl WritePng {
-    #[must_use]
-    pub fn evaluate(&self, image: Arc<Image>) -> Action {
-        Action::WritePng {
+    pub fn evaluate(&self, image: Arc<Image>, inputs: &Inputs) -> anyhow::Result<Action> {
+        Ok(Action::WritePng {
             image,
-            path: self.path.clone(),
-        }
+            path: expand_path_template(&self.path, inputs)?,
+        })
     }
 }
 
@@ -330,19 +381,34 @@ impl WritePng {
 /// no further.
 pub const BASELINE_EXPOSURE: f32 = 1.5;
 
-/// Develops a raw file into an upright, scene-referred Rec.2020 image, with its as-shot white
-/// balance and [`BASELINE_EXPOSURE`].
-pub fn develop(path: &Path) -> anyhow::Result<Image> {
-    let mosaic = ReadRaw::default().evaluate(path)?;
-    let mosaic = WhiteBalance::default().evaluate(&mosaic);
-    let image = Demosaic::default().evaluate(&mosaic);
-    let image = CameraToWorkingSpace::default().evaluate(&image)?;
-    let image = Orient::default().evaluate(&image);
-    let exposure = Exposure {
+/// The graph a new edit starts from. It develops the raw file bound to the input called `image`
+/// with its as-shot white balance and [`BASELINE_EXPOSURE`], and writes a PNG named after it.
+#[must_use]
+pub fn default_graph() -> Graph {
+    let mut graph = Graph::new();
+    let mosaic = graph.add(ReadRaw::default());
+    let mosaic = graph.add(WhiteBalance {
+        mosaic: Some(mosaic),
+        ..WhiteBalance::default()
+    });
+    let image = graph.add(Demosaic {
+        mosaic: Some(mosaic),
+    });
+    let image = graph.add(CameraToWorkingSpace { image: Some(image) });
+    let image = graph.add(Orient { image: Some(image) });
+    let image = graph.add(Exposure {
+        image: Some(image),
         stops: BASELINE_EXPOSURE,
-        ..Exposure::default()
-    };
-    Ok(exposure.evaluate(&image))
+    });
+    let image = graph.add(ViewTransform {
+        image: Some(image),
+        ..ViewTransform::default()
+    });
+    graph.add(WritePng {
+        image: Some(image),
+        ..WritePng::default()
+    });
+    graph
 }
 
 #[cfg(test)]
